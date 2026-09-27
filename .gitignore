@@ -26,3 +26,31 @@ uploads/
 *.db
 *.sqlite
 *.sqlite3
+
+# Frontend dependencies
+node_modules/
+
+# Frontend build output
+dist/
+build/
+
+# Local/editor files
+.vscode/
+
+# Local backup files
+*.bak
+*.backup
+*.phase2-backup
+*.task8_backup
+
+# Local audit/inventory files
+git_*_audit.txt
+git_current_untracked.txt
+
+# Generated analysis output
+output.json
+
+git_*.txt
+
+gitignore_audit.txt
+gitignore_encoding_audit.txt
