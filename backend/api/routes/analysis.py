@@ -209,7 +209,15 @@ def resolve_path(job_id: str):
     job = get_job(job_id)
     if not job:
         return None, None
-    return job, os.path.join(UPLOAD_DIR, job["filename"])
+    # Task 8/integration fix: job["file_path"] is the authoritative stored
+    # sample path (UUID-based, written by upload.py). Previously this
+    # rebuilt a path from job["filename"] (the client-supplied DISPLAY
+    # name) joined with UPLOAD_DIR, which no longer matches the actual
+    # <job_id>.bin storage convention at all.
+    file_path = job.get("file_path")
+    if not file_path:
+        return job, os.path.join(UPLOAD_DIR, job["filename"])
+    return job, file_path
 
 
 # ---------------------------------------------------------------------------
@@ -223,15 +231,15 @@ def full_pipeline(path: str) -> dict:
         return _pipeline_cache[path]
 
     # ── Unified Extraction (Radare2 + Ghidra) ────────────────────────────────
-    #
+    
     # run_unified_extraction() runs both engines and merges their output.
     # If Ghidra is not installed or fails, it falls back to radare2 silently.
     # The returned dict always contains the same keys regardless of which
     # engines succeeded.
-    #
+    
     # [GHIDRA] START / SUCCESS / FAIL / SKIP are logged inside ghidra_engine.py
     # [UNIFIED] logs are emitted by unified_extractor.py
-    #
+    
     extraction_meta: dict = {}
     try:
         unified = run_unified_extraction(path)

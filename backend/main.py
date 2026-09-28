@@ -7,6 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.routes.upload import router as upload_router
 from api.routes.analysis import router as analysis_router
 from api.routes.intelligence import router as intelligence_router
+from auth.routes import router as auth_router
+
+from database import init_db, SessionLocal
+from core.job_manager import SQLAlchemyJobRepository, set_repository, reconcile_startup_state
 
 from utils.debug import debug_log, debug_stage, debug_error
 
@@ -18,6 +22,18 @@ from utils.debug import debug_log, debug_stage, debug_error
 async def lifespan(app: FastAPI):
     debug_stage("APPLICATION START")
     debug_log("Status", "Backend is starting...")
+
+    # Integration fix: without this, core/job_manager.py silently falls
+    # back to its module-level default InMemoryJobRepository() — job
+    # state would not survive a restart and would not use
+    # models.JobRecord at all. Production must use the persistent
+    # SQLAlchemyJobRepository backed by the existing database.py
+    # engine/session factory.
+    init_db()
+    set_repository(SQLAlchemyJobRepository(SessionLocal))
+    reconciled = reconcile_startup_state()
+    debug_log("Job lifecycle", f"repository=SQLAlchemyJobRepository reconciled={reconciled}")
+
     yield
     debug_log("Status", "Backend is shutting down...")
 
@@ -48,6 +64,7 @@ app.add_middleware(
 # ==============================
 # ROUTES
 # ==============================
+app.include_router(auth_router)
 app.include_router(upload_router)
 app.include_router(analysis_router)
 app.include_router(intelligence_router, prefix="/intelligence")
