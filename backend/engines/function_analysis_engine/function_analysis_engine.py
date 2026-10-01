@@ -366,6 +366,12 @@ def _format_capabilities(cap_map: Dict[str, str]) -> List[Dict[str, Any]]:
 # Main analyzer
 # -----------------------
 
+from engines.extractor_engine.radare_extractor import (
+    RadareExtractor,
+    R2_PER_CALL_HARD_TIMEOUT,
+)
+
+
 def analyze_functions(
     binary_path: str,
     strings: Optional[List[str]] = None,
@@ -381,90 +387,101 @@ def analyze_functions(
       - capabilities: list of {name, mitre} — higher-level detection
       - mitre_techniques: sorted unique list of MITRE IDs for this function
       - risk_score: 0–100
+
+    The radare2 session (open + baseline "aaa" analysis) is now owned by
+    RadareExtractor, which enforces hard wall-clock timeouts and kills the
+    r2 process on a hang instead of blocking this call forever. Each
+    per-function disassembly (pdfj) is bounded the same way, and located by
+    the function's NUMERIC OFFSET rather than its (untrusted) name — a
+    malicious symbol name can therefore never be interpolated into an r2
+    command string. A per-function timeout stops the loop (the session is
+    already dead) but is not itself an error: partial results are returned.
     """
     if not binary_path:
         return {"error": "invalid binary path"}
 
     results = []
     global_capabilities: set = set()
-    r2 = None
+    extractor = RadareExtractor(binary_path)
 
     try:
-        r2 = r2pipe.open(binary_path, flags=["-2"])
-        r2.cmd("e anal.timeout=180")
-        r2.cmd("aaa")
+        extractor.open()
 
-        functions = r2.cmdj("aflj") or []
+        functions = extractor.get_functions()
 
         # Extract strings once
         if strings is None:
             try:
-                strings_j = r2.cmdj("izj") or []
-                strings = [
-                    s.get("string", "")
-                    for s in strings_j
-                    if isinstance(s, dict) and s.get("string")
-                ]
+                strings = extractor.get_strings()
             except Exception:
                 strings = []
 
         for func in functions:
+            if not isinstance(func, dict):
+                continue
             if func.get("size", 0) < 8:
                 continue
 
+            if extractor.r2 is None:
+                # A prior per-function hard timeout already invalidated the
+                # session — stop rather than attempt further functions
+                # against a killed process.
+                break
+
             name = func.get("name", "")
-            calls = []
 
-            # Disassemble and extract call targets
+            # SECURITY: locate the function by its numeric address, never
+            # by its (attacker-controlled) name. Supports both aflj's
+            # "offset" key and real radare2's "addr" key ("offset" wins if
+            # a dict somehow carries both) — same resolution rule as
+            # RadareExtractor.get_calls_from_all_functions(). Invalid or
+            # missing values are skipped safely rather than falling back to
+            # name interpolation.
+            raw_addr = func.get("offset")
+            if raw_addr is None:
+                raw_addr = func.get("addr")
+
             try:
-                disasm = r2.cmdj(f"pdfj @ {name}") or {}
-                for op in disasm.get("ops", []):
-                    if op.get("type", "") not in ("call", "ucall", "rcall", "icall"):
-                        continue
+                numeric_offset = int(raw_addr)
+            except (TypeError, ValueError):
+                numeric_offset = None
 
-                    resolved = None
+            # Call extraction itself — including the pdfj -> pdf fallback
+            # for offsets where pdfj silently returns {}/None/empty ops
+            # (a known radare2 limitation seen on some real samples) — is
+            # centralized in RadareExtractor.get_calls_for_address(). This
+            # is the SAME implementation get_calls_from_all_functions()
+            # uses; it is not duplicated here.
+            if numeric_offset is not None:
+                try:
+                    calls = extractor.get_calls_for_address(numeric_offset)
+                except TimeoutError:
+                    # Session already invalidated centrally by
+                    # _run_with_hard_timeout — stop the loop, keep whatever
+                    # results were already collected.
+                    break
+                except Exception:
+                    calls = []
+            else:
+                calls = []
 
-                    # Try jump target resolution
-                    jump_addr = op.get("jump")
-                    if jump_addr:
-                        try:
-                            sym = r2.cmd(f"fd @ {jump_addr}").strip()
-                            if sym and sym != str(jump_addr):
-                                resolved = sym
-                        except Exception:
-                            pass
-
-                    # Fallback: parse disasm text
-                    if not resolved:
-                        text = op.get("disasm", "") or ""
-                        parts = text.split(" ", 1)
-                        if len(parts) == 2:
-                            resolved = parts[1]
-
-                    # Fallback: refs
-                    if not resolved:
-                        for ref in (op.get("refs") or []):
-                            addr = ref.get("addr") if isinstance(ref, dict) else None
-                            if addr:
-                                try:
-                                    sym = r2.cmd(f"fd @ {addr}").strip()
-                                    if sym:
-                                        resolved = sym
-                                        break
-                                except Exception:
-                                    pass
-
-                    if resolved and resolved not in ("", "call"):
-                        calls.append(resolved)
-
-            except Exception:
-                pass
-
-            # Deduplicate calls (preserve order)
+            # Deduplicate calls (preserve order). Raw call targets from
+            # get_calls_for_address() are unstripped (e.g. "sym.imp.
+            # CreateFileW", "sym.system") — strip the same r2 symbol
+            # prefixes RadareExtractor.get_calls_from_all_functions()
+            # strips for its own callers, so displayed call names are
+            # clean ("CreateFileW", "system"). detect_behaviours/
+            # detect_capabilities already normalize independently via
+            # normalize_api(), so this is purely a display-consistency
+            # step, not a detection-correctness one.
             seen_c: set = set()
             unique_calls = []
             for c in calls:
-                if c not in seen_c:
+                if not c:
+                    continue
+                c = c.replace("sym.imp.", "").replace("sym.", "").replace("reloc.", "")
+                c = c.replace("[", "").replace("]", "").strip()
+                if c and c not in seen_c:
                     seen_c.add(c)
                     unique_calls.append(c)
 
@@ -535,6 +552,20 @@ def analyze_functions(
             "global_capabilities": sorted(list(global_capabilities))
         }
 
+    except TimeoutError as e:
+        # extractor.open()'s own hard timeout (open-stage or aaa-stage):
+        # the whole session never came up, so there is nothing partial to
+        # salvage — this is the one case that surfaces as a structured
+        # top-level error, matching the existing job-lifecycle contract
+        # (never leave the job stuck in "processing").
+        debug_log("analyze_functions TIMEOUT", str(e))
+        return {
+            "results": [],
+            "global_behaviours": [],
+            "global_capabilities": [],
+            "error": str(e)
+        }
+
     except Exception as e:
         debug_log("analyze_functions ERROR", str(e))
         return {
@@ -545,8 +576,4 @@ def analyze_functions(
         }
 
     finally:
-        if r2:
-            try:
-                r2.quit()
-            except Exception:
-                pass
+        extractor.close()

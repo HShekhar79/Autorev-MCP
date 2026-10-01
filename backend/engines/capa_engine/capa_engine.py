@@ -219,12 +219,23 @@ def run_capa_analysis(binary_path: str) -> dict:
 
         capa_path = os.path.join(PROJECT_ROOT, "capa.exe")
         rules_path = os.path.join(PROJECT_ROOT, "backend", "capa-rules")
+        signatures_path = os.path.join(
+            PROJECT_ROOT,
+            "backend",
+            "capa-signatures"
+        )
 
         if not os.path.exists(capa_path):
             debug_log("[CAPA] exe not found", capa_path)
             return _empty_result("failed", "capa_exe_not_found", capa_path)
 
-        cmd = [capa_path, "-j", "-r", rules_path, binary_path]
+        cmd = [
+            capa_path,
+            "-j",
+            "-r", rules_path,
+            "-s", signatures_path,
+            binary_path,
+        ]
         debug_log("[CAPA] running", cmd)
 
         process = subprocess.run(
