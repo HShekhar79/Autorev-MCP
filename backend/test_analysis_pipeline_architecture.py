@@ -173,7 +173,8 @@ def test_cache_is_per_full_path_and_reused():
         return orig(p)
     with patch.object(pipeline, "run_unified_extraction", counting):
         r1 = pipeline.run_analysis_pipeline("/up/one/x.bin")
-        assert pipeline.run_analysis_pipeline("/up/one/x.bin") is r1
+        assert pipeline.run_analysis_pipeline("/up/one/x.bin") == r1
+        assert pipeline.run_analysis_pipeline("/up/one/x.bin") is not r1  # isolated copy
         pipeline.run_analysis_pipeline("/up/two/x.bin")  # same basename
     assert calls == ["/up/one/x.bin", "/up/two/x.bin"]
 

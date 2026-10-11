@@ -124,13 +124,28 @@ def run_unified_extraction(file_path: str) -> dict:
         r2_functions = r2_extract_functions(file_path) or []
         r2_imports   = r2_extract_imports(file_path)   or []
         r2_strings   = r2_extract_strings(file_path)   or []
-        r2_available = True
-        debug_log(
-            "[UNIFIED] radare2 OK",
-            f"{len(r2_functions)} funcs, {len(r2_imports)} imports, {len(r2_strings)} strings",
-        )
+        if r2_functions or r2_imports or r2_strings:
+            r2_available = True
+        else:
+            # If all wrappers returned empty lists, verify whether r2 actually opened or failed
+            try:
+                _chk = RadareExtractor(file_path)
+                _chk.open()
+                r2_available = True
+                _chk.close()
+            except Exception:
+                r2_available = False
+
+        if r2_available:
+            debug_log(
+                "[UNIFIED] radare2 OK",
+                f"{len(r2_functions)} funcs, {len(r2_imports)} imports, {len(r2_strings)} strings",
+            )
+        else:
+            debug_log("[UNIFIED] radare2 UNAVAILABLE", "zero extraction output and r2 session failed to open")
     except Exception as exc:
         debug_log("[UNIFIED] radare2 FAIL", f"{type(exc).__name__}: {exc}")
+        r2_available = False
 
     # Calls only when radare2 itself worked (avoid a second timeout on a
     # binary r2 already failed to open). Failure here never affects

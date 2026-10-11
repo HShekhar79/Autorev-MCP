@@ -151,19 +151,24 @@ def validate_global_capabilities(
     # Extract all capabilities from functions
     function_caps = set()
     
-    for func in function_results:
-        # Extract from capabilities field
+    for func in (function_results or []):
+        if not isinstance(func, dict):
+            continue
         caps = func.get("capabilities", [])
         for cap in caps:
             if isinstance(cap, dict):
                 name = cap.get("name")
-                if name:
+                if name and name != "no_capabilities_detected":
                     function_caps.add(name)
             elif isinstance(cap, str):
-                function_caps.add(cap)
+                if cap and cap != "no_capabilities_detected":
+                    function_caps.add(cap)
     
-    # Convert global to set
-    global_caps = set(global_capabilities)
+    # Convert global to set, excluding placeholders
+    global_caps = set(
+        c for c in (global_capabilities or [])
+        if c and c != "no_capabilities_detected"
+    )
     
     # Check consistency
     missing_in_global = function_caps - global_caps
@@ -173,8 +178,8 @@ def validate_global_capabilities(
     
     result = {
         "valid": valid,
-        "function_caps": function_caps,
-        "global_caps": global_caps,
+        "function_caps": sorted(list(function_caps)),
+        "global_caps": sorted(list(global_caps)),
         "missing_in_global": sorted(list(missing_in_global)),
         "extra_in_global": sorted(list(extra_in_global))
     }

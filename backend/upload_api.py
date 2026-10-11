@@ -12,7 +12,7 @@ from database import get_db, init_db
 from auth.routes import router as auth_router
 from auth.dependencies import get_current_user
 from auth.ownership import require_owned_job
-from core.job_manager import create_job
+from core.job_manager import create_job, delete_job, expire_job
 from models import User
 import json
 from datetime import datetime
@@ -56,6 +56,8 @@ log = logging.getLogger("arise.api")
 
 UPLOAD_DIR = Path(os.getenv("ARISE_UPLOAD_DIR", "/tmp/arise_uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+REDIS_URL = os.getenv("ARISE_REDIS_URL", "redis://localhost:6379/0")
 
 MAX_FILE_MB   = int(os.getenv("ARISE_MAX_FILE_MB", "256"))
 MAX_FILE_SIZE = MAX_FILE_MB * 1024 * 1024
@@ -325,7 +327,7 @@ def health():
         r.ping()
         checks["redis"] = "ok"
     except Exception as exc:
-        checks["redis"] = f"unavailable ({exc})"
+        checks["redis"] = f"unavailable ({type(exc).__name__})"
     overall = "healthy" if all(v == "ok" for v in checks.values()) else "degraded"
     return {"status": overall, "checks": checks, "timestamp": time.time()}
 
@@ -407,11 +409,34 @@ async def upload_analyze(
             pass
         raise HTTPException(status_code=500, detail="Job creation failed")
 
-    task = run_analysis_task.apply_async(
-        args=[str(file_path), display_name],
-        task_id=job_id,
-    )
-    log.info(f"[{job_id}] Enqueued task {task.id}")
+    try:
+        task = run_analysis_task.apply_async(
+            args=[str(file_path), display_name],
+            task_id=job_id,
+        )
+        log.info(f"[{job_id}] Enqueued task {task.id}")
+    except Exception as enqueue_exc:
+        log.error(f"[{job_id}] Failed to enqueue analysis task: {enqueue_exc}", exc_info=True)
+
+        # Best-effort rollback of newly created job record
+        try:
+            delete_job(job_id)
+            log.info(f"[{job_id}] Rolled back job record")
+        except Exception as rb_job_exc:
+            log.error(f"[{job_id}] Rollback failed for job record: {rb_job_exc}", exc_info=True)
+
+        # Best-effort rollback of newly created file
+        try:
+            if file_path.is_file():
+                file_path.unlink()
+                log.info(f"[{job_id}] Rolled back uploaded file: {file_path}")
+        except Exception as rb_file_exc:
+            log.error(f"[{job_id}] Rollback failed for uploaded file: {rb_file_exc}", exc_info=True)
+
+        raise HTTPException(
+            status_code=503,
+            detail="Queue submission failed. Analysis service is currently unavailable.",
+        )
 
     return JSONResponse(
         status_code=202,

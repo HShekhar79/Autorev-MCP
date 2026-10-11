@@ -369,5 +369,10 @@ def expire_job(job_id: str) -> bool:
     return _repo.delete(job_id)
 
 
+def delete_job(job_id: str) -> bool:
+    """Hard-deletes the JobRecord (alias for expire_job)."""
+    return _repo.delete(job_id)
+
+
 def reconcile_startup_state() -> int:
     return _repo.reconcile_interrupted()

@@ -11,6 +11,11 @@ with orchestration-only changes (progress callback, failure boundary, extra
 APIRouter, Celery or job_manager dependency.
 """
 
+import collections
+import copy
+import os
+import threading
+
 from utils.debug import debug_log
 
 from engines.arise_engine.arise_engine import arise_verdict
@@ -88,13 +93,95 @@ def _notify(progress_cb, stage: str, pct: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Simple result cache — keyed by FULL file path (never basename)
+# Thread-safe Bounded Result Cache
+# Keyed by canonical file identity (path, size, mtime) to avoid stale entries
+# and bounded to prevent memory growth. Returns isolated deep copies.
 # ---------------------------------------------------------------------------
-_pipeline_cache: dict = {}
+class BoundedPipelineCache(collections.OrderedDict):
+    def __init__(self, max_size: int = 32, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.max_size = max_size
+        self._lock = threading.RLock()
+        self._path_to_identity: dict[str, tuple] = {}
+
+    def get_entry(self, identity: tuple, path: str):
+        with self._lock:
+            if identity in self:
+                self.move_to_end(identity)
+                return copy.deepcopy(super().__getitem__(identity))
+            if path in self:
+                self.move_to_end(path)
+                return copy.deepcopy(super().__getitem__(path))
+            return None
+
+    def set_entry(self, identity: tuple, path: str, result: dict):
+        with self._lock:
+            val = copy.deepcopy(result)
+            old_ident = self._path_to_identity.get(path)
+            if old_ident and old_ident != identity:
+                super().pop(old_ident, None)
+
+            self._path_to_identity[path] = identity
+            self[identity] = val
+            while len(self) > self.max_size:
+                popped_key, _ = self.popitem(last=False)
+                for p, id_key in list(self._path_to_identity.items()):
+                    if id_key == popped_key or p == popped_key:
+                        self._path_to_identity.pop(p, None)
+
+    def invalidate_path(self, path: str):
+        with self._lock:
+            ident = self._path_to_identity.pop(path, None)
+            if ident:
+                super().pop(ident, None)
+            super().pop(path, None)
+
+    def __getitem__(self, key):
+        with self._lock:
+            return copy.deepcopy(super().__getitem__(key))
+
+    def __setitem__(self, key, value):
+        with self._lock:
+            super().__setitem__(key, copy.deepcopy(value))
+            self.move_to_end(key)
+            while len(self) > self.max_size:
+                popped_key, _ = self.popitem(last=False)
+                for p, id_key in list(self._path_to_identity.items()):
+                    if id_key == popped_key or p == popped_key:
+                        self._path_to_identity.pop(p, None)
+
+    def __contains__(self, key):
+        with self._lock:
+            return super().__contains__(key)
+
+    def pop(self, key, default=None):
+        with self._lock:
+            if isinstance(key, str):
+                self.invalidate_path(key)
+            return super().pop(key, default)
+
+    def clear(self):
+        with self._lock:
+            self._path_to_identity.clear()
+            super().clear()
+
+
+def _get_file_identity(path: str) -> tuple:
+    try:
+        if os.path.isfile(path):
+            st = os.stat(path)
+            mtime_ns = getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9))
+            return (os.path.realpath(path), st.st_size, mtime_ns)
+    except OSError:
+        pass
+    return (os.path.abspath(path), None, None)
+
+
+_pipeline_cache: BoundedPipelineCache = BoundedPipelineCache(max_size=32)
 
 
 def _invalidate_cache(path: str):
-    _pipeline_cache.pop(path, None)
+    _pipeline_cache.invalidate_path(path)
 
 
 # ---------------------------------------------------------------------------
@@ -119,20 +206,34 @@ def collect_all_behaviours(function_results, imports, capa_results):
 
     try:
         # ── Function behaviours ──────────────────────────────────────────────
-        for f in function_results.get("results", []):
-            for b in f.get("behaviours", []):
+        results_list = function_results.get("results", []) if isinstance(function_results, dict) else []
+        for f in results_list:
+            func_name = f.get("function_name") if isinstance(f, dict) else None
+            for b in (f.get("behaviours", []) if isinstance(f, dict) else []):
                 if isinstance(b, dict) and b.get("name"):
-                    behaviours.append(b)
+                    entry = dict(b)  # copy to prevent mutating function_results
+                    entry.setdefault("source", "function")
+                    if func_name:
+                        if "function" not in entry:
+                            entry["function"] = func_name
+                        entry["functions"] = [func_name]
+                    behaviours.append(entry)
                 elif isinstance(b, str):
-                    # FIX: was normalize_behaviour (undefined) → normalize_behavior
                     entry = normalize_behavior(b)
                     if entry:
-                        behaviours.append({"name": entry, "source": "function", "confidence": 0.8})
+                        item = {"name": entry, "source": "function", "confidence": 0.8}
+                        if func_name:
+                            item["function"] = func_name
+                            item["functions"] = [func_name]
+                        behaviours.append(item)
 
         # ── Global behaviours ────────────────────────────────────────────────
-        for b in function_results.get("global_behaviours", []):
+        global_b = function_results.get("global_behaviours", []) if isinstance(function_results, dict) else []
+        for b in global_b:
             if isinstance(b, dict) and b.get("name"):
-                behaviours.append(b)
+                entry = dict(b)
+                entry.setdefault("source", "global")
+                behaviours.append(entry)
             elif isinstance(b, str):
                 entry = normalize_behavior(b)
                 if entry:
@@ -142,7 +243,9 @@ def collect_all_behaviours(function_results, imports, capa_results):
         import_behaviours = analyze_imports_for_behaviour(imports or [])
         for ib in import_behaviours:
             if isinstance(ib, dict) and ib.get("name"):
-                behaviours.append(ib)
+                entry = dict(ib)
+                entry.setdefault("source", "imports")
+                behaviours.append(entry)
             elif isinstance(ib, str):
                 entry = normalize_behavior(ib)
                 if entry:
@@ -168,20 +271,43 @@ def collect_all_behaviours(function_results, imports, capa_results):
                 continue
 
             name = name.lower().strip()
-            b["name"] = name
+            item = dict(b)  # copy to avoid aliasing
+            item["name"] = name
 
             existing = unique.get(name)
 
             if existing is None:
-                unique[name] = b
+                if "function" in item and "functions" not in item:
+                    item["functions"] = [item["function"]]
+                elif "functions" not in item:
+                    item["functions"] = []
+                unique[name] = item
             else:
-                if b.get("confidence", 0) > existing.get("confidence", 0):
-                    unique[name] = b
+                existing_sources = set(existing.get("source", "").split(","))
+                new_sources = set(item.get("source", "").split(","))
+                merged_sources = ",".join(sorted(s for s in existing_sources.union(new_sources) if s))
+
+                existing_funcs = set(existing.get("functions", []))
+                if existing.get("function"):
+                    existing_funcs.add(existing["function"])
+                new_funcs = set(item.get("functions", []))
+                if item.get("function"):
+                    new_funcs.add(item["function"])
+                all_funcs = sorted(list(s for s in existing_funcs.union(new_funcs) if s))
+
+                primary_func = existing.get("function") or item.get("function")
+
+                if item.get("confidence", 0) > existing.get("confidence", 0):
+                    item["source"] = merged_sources
+                    if primary_func:
+                        item["function"] = primary_func
+                    item["functions"] = all_funcs
+                    unique[name] = item
                 else:
-                    existing_sources = set(existing.get("source", "").split(","))
-                    new_sources = set(b.get("source", "").split(","))
-                    merged = existing_sources.union(new_sources)
-                    existing["source"] = ",".join(sorted(s for s in merged if s))
+                    existing["source"] = merged_sources
+                    if primary_func:
+                        existing["function"] = primary_func
+                    existing["functions"] = all_funcs
 
         detail = list(unique.values())
         behaviors = sorted([b["name"] for b in detail])
@@ -212,9 +338,11 @@ def run_analysis_pipeline(path: str, progress_cb=None) -> dict:
     """
 
     # Cache
-    if path in _pipeline_cache:
+    file_identity = _get_file_identity(path)
+    cached_result = _pipeline_cache.get_entry(file_identity, path)
+    if cached_result is not None:
         debug_log("PIPELINE CACHE HIT", path)
-        return _pipeline_cache[path]
+        return copy.deepcopy(cached_result)
 
     # ── Unified Extraction (Radare2 + Ghidra) ────────────────────────────────
     
@@ -242,12 +370,20 @@ def run_analysis_pipeline(path: str, progress_cb=None) -> dict:
         debug_log("UNIFIED EXTRACTION META", extraction_meta)
     except Exception as exc:
         debug_log("UNIFIED EXTRACTION FAIL — falling back to radare2 only", str(exc))
-        imports = extract_imports(path) or []
-        strings = extract_strings(path) or []
+        imports = []
+        strings = []
+        r2_avail = False
+        try:
+            imports = extract_imports(path) or []
+            strings = extract_strings(path) or []
+            r2_avail = bool(imports or strings)
+        except Exception:
+            pass
         extraction_meta = {
-            "radare2_available": True,
+            "radare2_available": r2_avail,
             "ghidra_available":  False,
             "fallback":          True,
+            "reason":            str(exc),
         }
 
     _notify(progress_cb, "extraction", 10)
@@ -468,7 +604,8 @@ def run_analysis_pipeline(path: str, progress_cb=None) -> dict:
     _notify(progress_cb, "mitre", 80)
 
     # ===============================
-    # 🔥 FINAL FIX: CONSISTENT GLOBAL CAPABILITIES
+    # ===============================
+    # REAL GLOBAL CAPABILITY VALIDATION (Fix 4)
     # ===============================
 
     global_capabilities = cap_result.get("capabilities", [])
@@ -476,14 +613,11 @@ def run_analysis_pipeline(path: str, progress_cb=None) -> dict:
     # Inject into analysis
     analysis["global_capabilities"] = global_capabilities
 
-    # 🔥 FIX VALIDATION LOGIC (no mismatch anymore)
-    validation = {
-        "valid": True,
-        "function_caps": set(global_capabilities),
-        "global_caps": set(global_capabilities),
-        "missing_in_global": [],
-        "extra_in_global": []
-    }
+    validation = validate_global_capabilities(
+        analysis.get("results", []),
+        global_capabilities
+    )
+    analysis["capability_validation"] = validation
 
     debug_log("GLOBAL CAP VALIDATION", validation)
 
@@ -547,18 +681,18 @@ def run_analysis_pipeline(path: str, progress_cb=None) -> dict:
         "analysis_meta": {
             "capa_enabled":             capa_status.get("enabled"),
             "capa_status":              capa_status.get("status"),
-            "global_capabilities_valid": bool(global_capabilities),
+            "global_capabilities_valid": bool(validation.get("valid", False)),
             # ── Ghidra / extraction meta ──────────────────────────────────
-            "ghidra_available":         extraction_meta.get("ghidra_available", False),
-            "radare2_available":        extraction_meta.get("radare2_available", True),
+            "ghidra_available":         bool(extraction_meta.get("ghidra_available", False)),
+            "radare2_available":        bool(extraction_meta.get("radare2_available", False)),
             "extraction_engine":        _describe_engines(extraction_meta),
             "extraction_elapsed":       extraction_meta.get("elapsed_seconds"),
         }
     }
 
-    _pipeline_cache[path] = result
+    _pipeline_cache.set_entry(file_identity, path, result)
     _notify(progress_cb, "complete", 100)
-    return result
+    return copy.deepcopy(result)
 
 
 def _describe_engines(meta: dict) -> str:

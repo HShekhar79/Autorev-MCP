@@ -33,6 +33,11 @@ from auth.dependencies import (
 )
 from auth.ownership import require_owned_job
 from models import User
+from utils.normalization import (
+    normalise_result as _normalise_result,
+    compute_hashes as _compute_hashes,
+    detect_file_type as _detect_file_type,
+)
 
 log = logging.getLogger("arise.report")
 router = APIRouter()
@@ -110,7 +115,16 @@ def _resolve_result(
             result = ar.result
             if not isinstance(result, dict):
                 raise HTTPException(status_code=500, detail="Task result is not a valid analysis dict")
-            return result, None
+            norm = _normalise_result(
+                raw=result,
+                elapsed=result.get("analysis_meta", {}).get("total_elapsed", 0.0),
+                original_name=result.get("analysis_meta", {}).get("filename", "") or "analysis",
+                hashes=result.get("hashes"),
+                file_type=result.get("file_type", "Unknown"),
+            )
+            return norm, None
+        except HTTPException:
+            raise
         except ImportError:
             raise HTTPException(status_code=500, detail="Celery worker not available in this environment")
 
@@ -121,21 +135,43 @@ def _resolve_result(
             raise authentication_required()
         job = require_owned_job(job_id, current_user)
         try:
-            from api.routes.analysis import full_pipeline
-            # Authoritative stored sample path (<job_id>.bin written by the
-            # upload endpoint). The client-supplied display filename is NEVER
-            # used to build a filesystem path.
             file_path = job.get("file_path")
-            if not file_path or not os.path.isfile(file_path):
-                # Job may have result cached
-                cached = job.get("result")
-                if cached and isinstance(cached, dict):
-                    return cached, None
+            has_file = bool(file_path and os.path.isfile(file_path))
+            cached = job.get("result")
+            display_name = job.get("filename") or "analysis"
+
+            # Prefer the persisted analysis result when available, rather than needlessly rerunning
+            if cached and isinstance(cached, dict):
+                raw = cached
+                resolved_path = file_path if has_file else None
+            elif has_file:
+                from api.routes.analysis import full_pipeline
+                # Authoritative stored sample path (<job_id>.bin written by the
+                # upload endpoint). The client-supplied display filename is NEVER
+                # used to build a filesystem path.
+                raw = full_pipeline(file_path)
+                if not isinstance(raw, dict):
+                    raise HTTPException(status_code=500, detail="Pipeline returned unexpected output")
+                resolved_path = file_path
+            else:
                 raise HTTPException(status_code=404, detail="Uploaded file no longer available — cannot regenerate report")
-            raw = full_pipeline(file_path)
-            if not isinstance(raw, dict):
-                raise HTTPException(status_code=500, detail="Pipeline returned unexpected output")
-            return raw, file_path
+
+            hashes = raw.get("hashes")
+            if not hashes or hashes.get("sha256") == "N/A":
+                hashes = _compute_hashes(resolved_path) if resolved_path else None
+
+            file_type = raw.get("file_type")
+            if not file_type or file_type == "Unknown":
+                file_type = _detect_file_type(resolved_path) if resolved_path else "Unknown"
+
+            norm = _normalise_result(
+                raw=raw,
+                elapsed=raw.get("analysis_meta", {}).get("total_elapsed", 0.0),
+                original_name=display_name,
+                hashes=hashes,
+                file_type=file_type,
+            )
+            return norm, resolved_path
         except HTTPException:
             raise
         except Exception as exc:
