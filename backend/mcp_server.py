@@ -35,12 +35,16 @@ except Exception as _e:
 
 # Pipeline import (STRICT ABSOLUTE)
 try:
-    from backend.analysis import run_analysis_pipeline as _run_analysis_pipeline
+    from services.analysis_pipeline import (
+        run_analysis_pipeline as _run_analysis_pipeline,
+        to_legacy_result as _to_legacy_result,
+    )
     _PIPELINE_AVAILABLE = True
     debug_log("[MCP] IMPORT", "run_analysis_pipeline: OK")
 except Exception as _e:
     _PIPELINE_AVAILABLE = False
     _run_analysis_pipeline = None
+    _to_legacy_result = None
     debug_log("[MCP] IMPORT FAIL", f"run_analysis_pipeline: {_e}")
 
 # ---------------------------------------------------------------------------
@@ -71,7 +75,7 @@ def _run_pipeline(file_path: str) -> dict:
     debug_log("[MCP] PIPELINE START", file_path)
 
     try:
-        result = _run_analysis_pipeline(file_path)
+        result = _to_legacy_result(_run_analysis_pipeline(file_path))
 
         if not isinstance(result, dict):
             return {"error": "pipeline returned non-dict", "raw": str(result)}

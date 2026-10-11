@@ -72,11 +72,15 @@ log.info(f"ARISE_CAPA_RULES: {os.getenv('ARISE_CAPA_RULES', 'NOT SET')}")
 # ---------------------------------------------------------------------------
 
 try:
-    from analysis import run_analysis_pipeline as _run_pipeline
+    from services.analysis_pipeline import (
+        run_analysis_pipeline as _run_pipeline,
+        to_legacy_result as _to_legacy_result,
+    )
     _PIPELINE_OK = True
     log.info("Pipeline import: OK")
 except Exception as _exc:
     _run_pipeline = None
+    _to_legacy_result = None
     _PIPELINE_OK  = False
     log.error(f"Pipeline import FAILED: {_exc}")
 
@@ -110,7 +114,7 @@ def run_analysis_task(self, file_path: str, original_name: str = "") -> dict:
         raise RuntimeError("Analysis pipeline not available on worker")
 
     try:
-        result = _run_pipeline(file_path, progress_cb=_progress)
+        result = _to_legacy_result(_run_pipeline(file_path, progress_cb=_progress))
 
         if not isinstance(result, dict):
             raise ValueError(f"Pipeline returned unexpected type: {type(result)}")

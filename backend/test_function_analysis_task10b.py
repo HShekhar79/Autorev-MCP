@@ -27,6 +27,8 @@ from unittest.mock import patch, MagicMock
 
 from engines.function_analysis_engine.function_analysis_engine import (
     analyze_functions,
+    calculate_risk,
+    BEHAVIOUR_WEIGHTS,
 )
 
 
@@ -282,3 +284,34 @@ if __name__ == "__main__":
             _failed += 1
     print(f"\n{_passed} passed, {_failed} failed")
     sys.exit(0 if _failed == 0 else 1)
+
+# H. indirect_call_execution is a benign/observational fallback: it must
+#    contribute ZERO behaviour-risk points, while the behaviour label and
+#    underlying register-call evidence are preserved.
+def test_indirect_call_execution_contributes_zero_behaviour_risk():
+    assert BEHAVIOUR_WEIGHTS["indirect_call_execution"] == 0
+    assert calculate_risk({"indirect_call_execution": None}, []) == 0
+
+    path = make_temp_file()
+
+    def cmdj_side_effect(cmd):
+        if cmd.startswith("aflj"):
+            return [{"name": "sym.dispatch", "addr": 0x1000, "size": 32}]
+        if cmd.startswith("izj"):
+            return []
+        if cmd == "pdfj @ 4096":
+            return {"ops": [{"type": "call", "disasm": "call rax"}]}
+        return {}
+
+    fake_r2 = _install(cmdj_side_effect)
+    with patch("engines.extractor_engine.radare_extractor.r2pipe.open",
+               return_value=fake_r2):
+        result = analyze_functions(path, strings=[], imports=[])
+
+    assert "error" not in result
+    fn = result["results"][0]
+    assert fn["calls"] == ["rax"]
+    assert [b["name"] for b in fn["behaviours"]] == ["indirect_call_execution"]
+    assert fn["risk_score"] == len(fn["calls"]) * 2
+
+

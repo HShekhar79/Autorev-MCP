@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # Python virtual environments
 # ============================================================
 venv/
@@ -82,3 +82,16 @@ output.json
 # ============================================================
 backend/capa-source-9.4.0/
 *.task9-backup
+
+# Local analysis environments
+.ghidra-venv/
+
+# Runtime diagnostic logs
+backend/diag_trace.log
+backend/mcp_server_stderr.log
+backend/mcp_server_stderr.previous.log
+
+# Local diagnostic output
+backend/capa_direct_test.json
+backend/capa_engine_current.txt
+backend/test_pe_api_output.txt

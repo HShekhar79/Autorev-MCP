@@ -24,7 +24,7 @@ from utils.debug import debug_log
 
 
 # =============================================================================
-# CAPA RULE NAME → CANONICAL BEHAVIOR TRANSLATION MAP
+# CAPA RULE NAME â†’ CANONICAL BEHAVIOR TRANSLATION MAP
 #
 # CAPA produces long descriptive rule names. This map translates them to the
 # canonical snake_case behavior names used throughout the pipeline.
@@ -33,7 +33,7 @@ from utils.debug import debug_log
 # =============================================================================
 
 CAPA_TO_CANONICAL: Dict[str, str] = {
-    # ── Network ──────────────────────────────────────────────────────────────
+    # â”€â”€ Network â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "act_as_tcp_client":                            "network_communication",
     "create_tcp_socket":                            "network_communication",
     "connect_tcp_socket":                           "network_communication",
@@ -46,14 +46,14 @@ CAPA_TO_CANONICAL: Dict[str, str] = {
     "initialize_winsock_library":                   "network_activity",
     "resolve_dns":                                  "dns_activity",
     "get_hostname":                                 "system_discovery",
-    "reference_google_public_dns_server":           "dns_activity",
+
     "download_url":                                 "payload_download",
     "communicate_using_http":                       "http_communication",
     "communicate_using_https":                      "http_communication",
     "communicate_using_ftp":                        "ftp_communication",
     "send_and_receive_data_using_http":             "http_communication",
 
-    # ── Memory ───────────────────────────────────────────────────────────────
+    # â”€â”€ Memory â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "allocate_memory":                              "memory_allocation",
     "allocate_heap_memory":                         "memory_allocation",
     "allocate_rwx_memory":                          "memory_allocation",
@@ -62,7 +62,7 @@ CAPA_TO_CANONICAL: Dict[str, str] = {
     "write_to_process_memory":                      "process_injection",
     "inject_shellcode":                             "process_injection",
 
-    # ── Execution ─────────────────────────────────────────────────────────────
+    # â”€â”€ Execution â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "execute_command":                              "command_execution",
     "run_a_shell_command":                          "command_execution",
     "spawn_process":                                "process_creation",
@@ -70,11 +70,11 @@ CAPA_TO_CANONICAL: Dict[str, str] = {
     "create_process_with_modified_environment":     "process_creation",
     "create_thread":                                "process_creation",
     "create_remote_thread":                         "process_injection",
-    "delay_execution":                              "command_execution",
-    "execute_shellcode":                            "process_injection",
-    "execute_shellcode_via_indirect_call":          "indirect_call_execution",
 
-    # ── Registry ─────────────────────────────────────────────────────────────
+    "execute_shellcode":                            "process_injection",
+
+
+    # â”€â”€ Registry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "set_registry_value":                           "registry_modification",
     "create_or_open_registry_key":                  "registry_persistence",
     "persist_via_run_registry_key":                 "registry_persistence",
@@ -83,7 +83,7 @@ CAPA_TO_CANONICAL: Dict[str, str] = {
     "query_or_enumerate_registry_key":              "registry_query",
     "query_registry_value":                         "registry_query",
 
-    # ── Filesystem ────────────────────────────────────────────────────────────
+    # â”€â”€ Filesystem â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "create_or_open_file":                          "file_creation",
     "write_file":                                   "file_modification",
     "write_file_on_windows":                        "file_modification",
@@ -94,14 +94,13 @@ CAPA_TO_CANONICAL: Dict[str, str] = {
     "enumerate_files":                              "directory_enumeration",
     "list_directory_contents":                      "directory_enumeration",
 
-    # ── Process ───────────────────────────────────────────────────────────────
-    "terminate_process":                            "process_termination",
+    # â”€â”€ Process â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "enumerate_processes":                          "process_enumeration",
     "get_process_information":                      "process_enumeration",
     "inject_into_process":                          "process_injection",
     "hollow_process":                               "process_hollowing",
 
-    # ── Discovery ─────────────────────────────────────────────────────────────
+    # â”€â”€ Discovery â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "get_system_information_on_windows":            "system_information_discovery",
     "get_os_information":                           "system_information_discovery",
     "get_computer_name":                            "system_discovery",
@@ -110,42 +109,57 @@ CAPA_TO_CANONICAL: Dict[str, str] = {
     "enumerate_network_interfaces":                 "system_discovery",
     "get_memory_status":                            "system_discovery",
 
-    # ── Dynamic loading / obfuscation ─────────────────────────────────────────
+    # â”€â”€ Dynamic loading / obfuscation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "link_function_at_runtime_on_windows":          "dynamic_loading",
     "resolve_function_by_hash":                     "dynamic_api_resolution",
     "load_library":                                 "dynamic_loading",
-    "parse_pe_header":                              "dynamic_loading",
-    "enumerate_pe_sections":                        "dynamic_loading",
 
-    # ── Anti-analysis ─────────────────────────────────────────────────────────
-    "reference_anti_vm_strings":                    "anti_vm",
+    # â”€â”€ Anti-analysis â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
     "detect_debugger":                              "anti_debugging",
     "check_for_debugger":                           "anti_debugging",
     "detect_virtual_machine":                       "anti_vm",
     "detect_sandbox":                               "anti_sandbox",
     "evade_analysis":                               "anti_debugging",
 
-    # ── Persistence ───────────────────────────────────────────────────────────
+    # â”€â”€ Persistence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "persist_via_scheduled_task":                   "scheduled_task_creation",
     "install_service":                              "service_creation",
     "create_service":                               "service_creation",
 
-    # ── Credentials ───────────────────────────────────────────────────────────
+    # â”€â”€ Credentials â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "steal_credential":                             "credential_dumping",
     "dump_lsass_memory":                            "credential_dumping",
     "capture_keystrokes":                           "keylogging",
 
-    # ── Crypto ────────────────────────────────────────────────────────────────
+    # â”€â”€ Crypto â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "encrypt_data":                                 "cryptographic_activity",
     "decrypt_data":                                 "cryptographic_activity",
     "calculate_checksum":                           "cryptographic_activity",
 
-    # ── Structural / misc (map to nearest semantic behavior) ──────────────────
-    "contain_loop":                                 "indirect_call_execution",
-    "contain_a_thread_local_storage_(.tls)_section": "indirect_call_execution",
-    "get_thread_local_storage_value":               "indirect_call_execution",
-    "calculate_modulo_256_via_x86_assembly":        "indirect_call_execution",
+    # â”€â”€ Structural / misc (map to nearest semantic behavior) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 }
+
+
+CAPA_NOT_PROMOTED = frozenset({
+    "reference_google_public_dns_server",
+    "delay_execution",
+    "execute_shellcode_via_indirect_call",
+    "reference_anti_vm_strings",
+    "contain_loop",
+    "contain_a_thread_local_storage_(.tls)_section",
+    "get_thread_local_storage_value",
+    "calculate_modulo_256_via_x86_assembly",
+    "terminate_process",
+    "parse_pe_header",
+    "enumerate_pe_sections",
+})
+
+
+def _clean_capa_name(raw_name: str) -> str:
+    """Lower-case a raw CAPA rule name and normalize separators to underscores."""
+    return str(raw_name).lower().strip().replace(" ", "_").replace("-", "_")
 
 
 def translate_capa_name(raw_name: str) -> str:
@@ -162,17 +176,22 @@ def translate_capa_name(raw_name: str) -> str:
         raw_name: Raw CAPA rule name (e.g. "persist_via_run_registry_key")
 
     Returns:
-        Canonical behavior name (e.g. "registry_persistence") or cleaned raw name
+        Canonical behavior name (e.g. "registry_persistence") or cleaned raw name.
+        Returns "" for CAPA_NOT_PROMOTED rules: they remain raw CAPA evidence but
+        must never become canonical behaviors.
     """
     if not raw_name:
         return ""
 
-    cleaned = str(raw_name).lower().strip().replace(" ", "_").replace("-", "_")
+    cleaned = _clean_capa_name(raw_name)
+
+    if cleaned in CAPA_NOT_PROMOTED:
+        return ""
 
     # Step 1: CAPA-specific translation map
     if cleaned in CAPA_TO_CANONICAL:
         canonical = CAPA_TO_CANONICAL[cleaned]
-        debug_log("[CAPA TRANSLATE]", "%r → %r" % (raw_name, canonical))
+        debug_log("[CAPA TRANSLATE]", "%r â†’ %r" % (raw_name, canonical))
         return canonical
 
     # Step 2: Standard normalization (handles already-canonical names)
@@ -180,7 +199,7 @@ def translate_capa_name(raw_name: str) -> str:
     if normalized:
         return normalized
 
-    # Step 3: Return cleaned form — preserves CAPA name in output
+    # Step 3: Return cleaned form â€” preserves CAPA name in output
     # (still useful for deduplicated_capabilities, just won't map to a tactic)
     return cleaned
 
@@ -240,6 +259,7 @@ def run_capa_analysis(binary_path: str) -> dict:
 
         process = subprocess.run(
             cmd,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=180,
@@ -267,11 +287,11 @@ def _parse_and_normalize(data: dict) -> dict:
     Parse raw CAPA JSON output.
 
     KEY FIX: Each rule name is translated through CAPA_TO_CANONICAL before
-    being added to normalized_capabilities. This is what was missing — CAPA
+    being added to normalized_capabilities. This is what was missing â€” CAPA
     names like "persist_via_run_registry_key" were passing through as-is,
     not recognized by CapabilityEngine.mapping, and silently falling through.
     """
-    # Extract rules dict — handle both CAPA v1 and v2 formats
+    # Extract rules dict â€” handle both CAPA v1 and v2 formats
     if "rules" in data:
         rules = data["rules"]
     elif "analysis" in data and "rules" in data["analysis"]:
@@ -303,7 +323,7 @@ def _parse_and_normalize(data: dict) -> dict:
         meta = rule_data.get("meta", {})
         raw_name = meta.get("name") if is_list_format else meta.get("name", "")
 
-        # For dict format, rule_name is the key — use meta.name if available
+        # For dict format, rule_name is the key â€” use meta.name if available
         if not raw_name:
             continue
 
@@ -311,7 +331,9 @@ def _parse_and_normalize(data: dict) -> dict:
 
         # Extract MITRE techniques
         mitre_entries = meta.get("att&ck", [])
-        canonical = translate_capa_name(raw_name)
+        # Non-promoted rules translate to "" but stay raw CAPA evidence here, so
+        # MITRE / function_capabilities / capability_details behave exactly as before.
+        canonical = translate_capa_name(raw_name) or _clean_capa_name(raw_name)
         mapped_ids: set = set()
 
         for entry in mitre_entries:
@@ -348,7 +370,7 @@ def _parse_and_normalize(data: dict) -> dict:
                     if canonical not in function_capabilities[func_addr]:
                         function_capabilities[func_addr].append(canonical)
 
-    # Translate all raw CAPA names → canonical behavior names
+    # Translate all raw CAPA names â†’ canonical behavior names
     # DEDUP: multiple CAPA rules may translate to the same canonical behavior
     seen_canonical: set = set()
     normalized_capabilities: List[dict] = []

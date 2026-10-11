@@ -83,8 +83,6 @@ class CapabilityEngine:
             "token_manipulation":           ["credential_access"],
 
             "privilege_escalation":         ["privilege_escalation"],
-
-            "unknown_external_activity":    ["execution"],
         }
 
         self.weights = {

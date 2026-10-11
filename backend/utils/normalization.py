@@ -146,7 +146,6 @@ NORMALIZATION_MAP: dict[str, str] = {
     "file_encryption":              "cryptographic_activity",  # feature_engine orphan
     "data_encryption":              "cryptographic_activity",
     "startup_execution":            "startup_persistence",
-    "remote_execution":             "process_creation",
     "data_collection":              "file_creation",           # collection category alias
     "obfuscation":                  "dynamic_api_resolution",
 

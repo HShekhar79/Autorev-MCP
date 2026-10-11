@@ -4,6 +4,13 @@ capability_mitre_engine.py
 Maps high-level capabilities → MITRE ATT&CK techniques.
 Target architecture: behaviour → capability → MITRE
 
+NOTE: these mappings are *hypotheses*, not confirmed findings. A capability
+alone does not prove a technique. The fusion engine
+(engines/fusion_engine/fusion_engine.py) decides whether a technique is
+evidence-supported (corroborated by behaviour->MITRE) or only a
+capability-derived candidate. This engine only reports what the capability
+level implies, plus which capabilities implied it ("derived_from").
+
 Input:
     capabilities: list[str]
     scores: dict[str, float]
@@ -12,7 +19,8 @@ Output:
     {
         "mitre_techniques": [...],
         "scores": {"T1071": 2.4, ...},
-        "ranked": ["T1071", ...]
+        "ranked": ["T1071", ...],
+        "derived_from": {"T1071": ["command_and_control"], ...}
     }
 """
 
@@ -50,17 +58,20 @@ class CapabilityMitreEngine:
             {
                 "mitre_techniques": list[str],
                 "scores": dict[str, float],
-                "ranked": list[str]
+                "ranked": list[str],
+                "derived_from": dict[str, list[str]]  # technique -> capabilities
             }
         """
         if not capabilities:
             return {
                 "mitre_techniques": [],
                 "scores": {},
-                "ranked": []
+                "ranked": [],
+                "derived_from": {}
             }
 
         technique_scores = {}
+        derived_from = {}
 
         for cap in capabilities:
             if not isinstance(cap, str):
@@ -76,6 +87,7 @@ class CapabilityMitreEngine:
             techniques = self.mapping.get(cap, self.mapping.get("execution", []))
 
             for technique in techniques:
+                derived_from.setdefault(technique, set()).add(cap)
                 if technique not in technique_scores:
                     technique_scores[technique] = score
                 else:
@@ -97,9 +109,12 @@ class CapabilityMitreEngine:
         result = {
             "mitre_techniques": sorted(technique_scores.keys()),
             "scores": technique_scores,
-            "ranked": ranked
+            "ranked": ranked,
+            "derived_from": {
+                t: sorted(derived_from[t]) for t in sorted(derived_from)
+            }
         }
 
         debug_log("CapabilityMitreEngine OUTPUT", result)
 
-        return result
+        return result

@@ -1,22 +1,70 @@
 """
 engines/fusion_engine.py
 
-MITRE technique fusion with deduplication and optional weighting.
+MITRE technique fusion: evidence-supported findings vs capability candidates.
 
-FIXES:
-1. Prevent duplicate MITRE IDs when combining behavior + capability MITRE
-2. Add optional weighting (capability MITRE scores > behavior MITRE scores)
-3. Safe empty-case handling
-4. Preserve all existing output fields for backward compatibility
+Evidence model
+--------------
+    behaviour-only            -> SUPPORTED   sources ["behavior"]
+    behaviour + capability    -> SUPPORTED   sources ["behavior", "capability"]  (corroborated)
+    capability-only           -> CANDIDATE   sources ["capability"]  (hypothesis)
 
-Fusion strategy:
-    - Behavior MITRE: base score 1.5
-    - Capability MITRE: uses capability engine scores (typically 2-3)
-    - Final score: MAX of all sources (no addition to prevent inflation)
+Direct behaviour evidence is sufficient on its own. A capability-derived
+technique is never promoted to a finding without behaviour support; it stays
+visible to analysts in ``mitre_candidates`` as an investigative hypothesis
+(NOT a confirmed finding, and NOT automatically a false positive).
+
+Only SUPPORTED techniques appear in ``mitre_techniques`` / ``final_mitre`` /
+``scores`` and therefore only they feed risk scoring and CVSS.
+
+Scores: behaviour base 1.5 (2.0 if weight_capabilities=False); a corroborated
+technique takes MAX(behaviour base, capability score) - never a sum.
 """
+
+import math
 
 from utils.debug import debug_log
 from typing import Dict, Any, List, Optional
+
+
+SOURCE_BEHAVIOR = "behavior"
+SOURCE_CAPABILITY = "capability"
+
+
+def _valid_ids(values) -> List[str]:
+    if not isinstance(values, (list, tuple, set)):
+        return []
+    return [v for v in values if isinstance(v, str) and v]
+
+
+def _safe_score(value) -> float:
+    try:
+        score = float(value)
+    except Exception:
+        return 0.0
+    return score if math.isfinite(score) else 0.0
+
+
+def _rank(scores: Dict[str, float]) -> List[str]:
+    # score DESC, then technique ID ASC -> deterministic regardless of input order
+    return sorted(scores.keys(), key=lambda t: (-scores[t], t))
+
+
+def _empty_result(message: str) -> dict:
+    return {
+        "mitre_techniques": [],
+        "final_mitre": [],
+        "scores": {},
+        "total_techniques": 0,
+        "tactics": {},
+        "sources": {},
+        "support_level": {},
+        "mitre_candidates": [],
+        "candidate_scores": {},
+        "candidate_details": [],
+        "total_candidates": 0,
+        "message": message,
+    }
 
 
 def merge_mitre_results(
@@ -25,125 +73,143 @@ def merge_mitre_results(
     weight_capabilities: bool = True
 ) -> dict:
     """
-    Merge MITRE techniques from behavior and capability engines.
-    
-    Deduplicates MITRE IDs and combines scores using MAX strategy
-    to prevent score inflation from duplicate detections.
-    
+    Fuse behaviour->MITRE and capability->MITRE into supported findings and
+    capability-only candidates.
+
     Args:
         behaviour_mitre: Output from mitre_engine.map_behaviour_to_mitre()
         capability_mitre: Output from capability_mitre_engine.run()
-        weight_capabilities: If True, give capability MITRE higher weight
-        
+        weight_capabilities: if True behaviour base score is 1.5, else 2.0
+
     Returns:
         {
-            "mitre_techniques": list[str],      # sorted unique IDs
+            # ---- evidence-supported (risk-eligible) ----
+            "mitre_techniques": list[str],      # supported IDs, ranked
             "final_mitre": list[str],           # alias for compatibility
-            "scores": dict[str, float],         # technique -> score
-            "total_techniques": int,
-            "tactics": dict[str, list[str]],    # preserved from behavior
-            "sources": dict[str, list[str]]     # ✅ NEW: technique -> sources
+            "scores": dict[str, float],         # supported techniques only
+            "total_techniques": int,            # supported count
+            "tactics": dict[str, list[str]],    # preserved from behaviour engine
+            "sources": dict[str, list[str]],    # supported: ["behavior"] or
+                                                #            ["behavior", "capability"]
+            "support_level": dict[str, str],    # "behavior" | "corroborated"
+
+            # ---- capability-only hypotheses (NOT risk-eligible) ----
+            "mitre_candidates": list[str],      # ranked IDs
+            "candidate_scores": dict[str, float],
+            "candidate_details": list[dict],    # id, score, sources, status,
+                                                # derived_from_capabilities
+            "total_candidates": int,
         }
     """
     behaviour_mitre = behaviour_mitre or {}
     capability_mitre = capability_mitre or {}
 
-    final_scores = {}
-    technique_sources = {}  # ✅ NEW: track which engine detected each technique
+    base_score = 1.5 if weight_capabilities else 2.0
 
     # -------------------------
-    # 1. Behaviour MITRE
+    # 1. Behaviour MITRE (direct evidence -> supported)
     # -------------------------
     behaviour_list = behaviour_mitre.get("mitre_techniques", [])
+    behaviour_ids = set(_valid_ids(behaviour_list))
 
-    if isinstance(behaviour_list, list):
-        for tech in behaviour_list:
-            if isinstance(tech, str) and tech:
-                # Base score for behavior detections
-                base_score = 1.5 if weight_capabilities else 2.0
-                final_scores[tech] = max(final_scores.get(tech, 0.0), base_score)
-                
-                # Track source
-                if tech not in technique_sources:
-                    technique_sources[tech] = []
-                technique_sources[tech].append("behavior")
+    supported_scores: Dict[str, float] = {}
+    sources: Dict[str, List[str]] = {}
+
+    for tech in behaviour_ids:
+        supported_scores[tech] = base_score
+        sources[tech] = [SOURCE_BEHAVIOR]
 
     # -------------------------
-    # 2. Capability MITRE
+    # 2. Capability MITRE (corroborates or becomes a candidate)
     # -------------------------
     cap_scores = capability_mitre.get("scores", {})
+    derived_from = capability_mitre.get("derived_from", {})
+    if not isinstance(derived_from, dict):
+        derived_from = {}
+
+    candidate_scores: Dict[str, float] = {}
 
     if isinstance(cap_scores, dict):
-        for tech, score in cap_scores.items():
+        for tech, raw_score in cap_scores.items():
             if not isinstance(tech, str) or not tech:
                 continue
 
-            try:
-                score = float(score)
-            except Exception:
-                score = 0.0
+            score = _safe_score(raw_score)
 
-            # Use MAX to prevent inflation
-            final_scores[tech] = max(final_scores.get(tech, 0.0), score)
-            
-            # Track source
-            if tech not in technique_sources:
-                technique_sources[tech] = []
-            if "capability" not in technique_sources[tech]:
-                technique_sources[tech].append("capability")
+            if tech in behaviour_ids:
+                # Corroborated: keep MAX, never sum
+                supported_scores[tech] = max(supported_scores[tech], score)
+                if SOURCE_CAPABILITY not in sources[tech]:
+                    sources[tech].append(SOURCE_CAPABILITY)
+            else:
+                candidate_scores[tech] = max(candidate_scores.get(tech, 0.0), score)
 
     # -------------------------
     # EMPTY SAFE CASE
     # -------------------------
-    if not final_scores:
-        return {
-            "mitre_techniques": [],
-            "final_mitre": [],
-            "scores": {},
-            "total_techniques": 0,
-            "tactics": {},
-            "sources": {},
-            "message": "No MITRE techniques detected"
-        }
+    if not supported_scores and not candidate_scores:
+        return _empty_result("No MITRE techniques detected")
 
     # -------------------------
-    # Normalize scores
+    # Normalize + rank (deterministic)
     # -------------------------
-    final_scores = {
-        t: round(s, 2)
-        for t, s in final_scores.items()
+    supported_scores = {t: round(s, 2) for t, s in supported_scores.items()}
+    candidate_scores = {t: round(s, 2) for t, s in candidate_scores.items()}
+
+    ranked = _rank(supported_scores)
+    candidate_ranked = _rank(candidate_scores)
+
+    support_level = {
+        t: ("corroborated" if SOURCE_CAPABILITY in sources[t] else "behavior")
+        for t in ranked
     }
 
-    # -------------------------
-    # Sort (descending by score, then alphabetically)
-    # -------------------------
-    ranked = sorted(
-        final_scores.keys(),
-        key=lambda t: (-final_scores[t], t)
-    )
+    candidate_details = []
+    for tech in candidate_ranked:
+        caps = derived_from.get(tech, [])
+        caps = sorted({c for c in caps if isinstance(c, str)}) if isinstance(caps, (list, tuple, set)) else []
+        candidate_details.append({
+            "technique": tech,
+            "score": candidate_scores[tech],
+            "sources": [SOURCE_CAPABILITY],
+            "status": "candidate",
+            "derived_from_capabilities": caps,
+        })
 
     # -------------------------
-    # Preserve tactics from behavior engine
+    # Preserve tactics from behaviour engine
     # -------------------------
     tactics = behaviour_mitre.get("tactics", {})
 
     result = {
         "mitre_techniques": ranked,
-        "final_mitre": ranked,  # alias for backward compatibility
-        "scores": final_scores,
+        "final_mitre": list(ranked),  # alias for backward compatibility
+        "scores": supported_scores,
         "total_techniques": len(ranked),
         "tactics": tactics,
-        "sources": technique_sources  # ✅ NEW: source attribution
+        "sources": {t: list(sources[t]) for t in ranked},
+        "support_level": support_level,
+        "mitre_candidates": candidate_ranked,
+        "candidate_scores": candidate_scores,
+        "candidate_details": candidate_details,
+        "total_candidates": len(candidate_ranked),
     }
 
+    if not ranked:
+        result["message"] = (
+            "No evidence-supported MITRE techniques; capability-derived "
+            "candidates only"
+        )
+
     debug_log("[FUSION] Merged MITRE techniques", {
-        "total": len(ranked),
-        "from_behavior": len(behaviour_list) if isinstance(behaviour_list, list) else 0,
+        "supported": len(ranked),
+        "candidates": len(candidate_ranked),
+        "from_behavior": len(behaviour_ids),
         "from_capability": len(cap_scores) if isinstance(cap_scores, dict) else 0,
-        "deduplicated": len(ranked)
     })
 
-    debug_log("[FUSION] Final scores", final_scores)
+    debug_log("[FUSION] Supported scores", supported_scores)
+    debug_log("[FUSION] Candidate scores", candidate_scores)
 
     return result
 

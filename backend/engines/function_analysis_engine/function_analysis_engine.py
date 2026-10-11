@@ -1,7 +1,7 @@
 # engines/function_analysis_engine/function_analysis_engine.py
 import r2pipe
 import re
-from typing import List, Dict, Any, Optional
+from typing import Iterable, List, Dict, Any, Optional
 from utils.debug import debug_log
 from utils.normalization import normalize_behavior
 
@@ -39,11 +39,13 @@ BEHAVIOUR_PATTERNS = {
         "internetconnect", "httpsendrequestex", "winhttpsendrequest",
         "connect", "httpopenrequest"
     ],
+    # Single-API evidence: ONLY the cross-process primitives.  Weak/ambiguous
+    # APIs (OpenProcess, VirtualAllocEx, CreateThreadEx, SetThreadContext) are
+    # deliberately NOT here - they count only through the combination rule in
+    # _has_process_injection_evidence().
     "process_injection": [
         "createremotethread", "createremotethreadex",
         "writeprocessmemory", "writevirtualmemory",
-        "createthreadex", "setthreadcontext",
-        "virtualallocex", "openprocess"
     ],
     "process_hollowing": ["unmapviewofsection"],
     "process_creation": [
@@ -176,6 +178,43 @@ for _b, _patterns in BEHAVIOUR_PATTERNS.items():
         _API_TO_BEHAVIOUR.setdefault(_p.lower(), []).append(_b)
 
 
+# -----------------------
+# Process-injection evidence rule (shared by behaviours and capabilities)
+# -----------------------
+# Evidence classes (inputs are normalize_api() output):
+#   local allocation  : virtualalloc (a/w)      -> memory_allocation only
+#   remote allocation : virtualallocex          -> memory_allocation only
+#   remote write      : writeprocessmemory, writevirtualmemory
+#   remote thread     : createremotethread(ex)
+#   execution variant : createthreadex (NtCreateThreadEx), rtlcreateuserthread,
+#                       setthreadcontext, queueuserapc, queueapcthread
+#   OpenProcess       : context only - never evidence by itself
+#
+# process_injection holds when EITHER
+#   (a) a remote-write or remote-thread primitive is present, OR
+#   (b) remote allocation + an execution variant are both present
+#       (injection variants that avoid WriteProcessMemory/CreateRemoteThread).
+
+_INJECTION_PRIMITIVES = (
+    "createremotethread", "writeprocessmemory", "writevirtualmemory",
+)
+_INJECTION_REMOTE_ALLOC = "virtualallocex"
+_INJECTION_EXEC_VARIANTS = frozenset({
+    "createthreadex", "rtlcreateuserthread", "setthreadcontext",
+    "queueuserapc", "queueapcthread",
+})
+
+
+def _has_process_injection_evidence(normalized_apis: Iterable[str]) -> bool:
+    """normalized_apis: already passed through normalize_api().lower()."""
+    apis = [a for a in normalized_apis if a]
+    if any(p in a for a in apis for p in _INJECTION_PRIMITIVES):
+        return True
+    has_remote_alloc = any(_INJECTION_REMOTE_ALLOC in a for a in apis)
+    has_exec_variant = any(a in _INJECTION_EXEC_VARIANTS for a in apis)
+    return has_remote_alloc and has_exec_variant
+
+
 def detect_behaviours(calls: List[str]) -> Dict[str, str]:
     """
     Detect all suspicious behaviours from a list of API call names.
@@ -185,16 +224,24 @@ def detect_behaviours(calls: List[str]) -> Dict[str, str]:
         Only one entry per unique behaviour name — NO duplicates.
     """
     detected: Dict[str, str] = {}  # {behaviour_name: mitre_id}
+    normalized_apis: List[str] = []
 
     for raw in calls:
         api = normalize_api(raw).lower()
         if not api:
             continue
+        normalized_apis.append(api)
         for key, behaviours in _API_TO_BEHAVIOUR.items():
             if key in api:
                 for bname in behaviours:
                     if bname not in detected:
                         detected[bname] = MITRE_MAPPING.get(bname)
+
+    # Correlated evidence (e.g. VirtualAllocEx + NtCreateThreadEx) that no
+    # single API pattern captures.
+    if ("process_injection" not in detected
+            and _has_process_injection_evidence(normalized_apis)):
+        detected["process_injection"] = MITRE_MAPPING.get("process_injection")
 
     return detected
 
@@ -206,8 +253,11 @@ def detect_behaviours(calls: List[str]) -> Dict[str, str]:
 # Each rule: (capability_name, [any one of these APIs triggers it], mitre_id)
 CAPABILITY_RULES = [
     ("file_write",              ["createfile", "writefile"],                "T1119"),
-    ("process_injection",       ["virtualalloc", "writeprocessmemory",
-                                  "createremotethread"],                    "T1055"),
+    # Evaluated by _has_process_injection_evidence() (list kept for reference):
+    # VirtualAlloc/VirtualAllocEx/OpenProcess alone are NOT process injection.
+    ("process_injection",       ["writeprocessmemory", "writevirtualmemory",
+                                  "createremotethread",
+                                  "createremotethreadex"],                  "T1055"),
     ("dynamic_api_resolution",  ["loadlibrary", "getprocaddress"],          "T1620"),
     ("command_execution",       ["createprocess", "winexec",
                                   "shellexecute", "system"],                "T1059"),
@@ -230,7 +280,10 @@ def detect_capabilities(calls: List[str]) -> Dict[str, str]:
     normalized = {normalize_api(c).lower() for c in calls if c}
     caps: Dict[str, str] = {}
     for cap_name, required_apis, mitre_id in CAPABILITY_RULES:
-        if any(req in normalized for req in required_apis):
+        if cap_name == "process_injection":
+            if _has_process_injection_evidence(normalized):
+                caps[cap_name] = mitre_id
+        elif any(req in normalized for req in required_apis):
             caps[cap_name] = mitre_id
     return caps
 
@@ -278,8 +331,13 @@ def detect_hidden_api_behaviour(
         low = str(s).lower()
         for token in SUSPICIOUS_API_STRINGS:
             if token in low:
+                # An API NAME appearing in a string/import table is not evidence the
+                # API is used: virtualalloc / writeprocessmemory / createremotethread
+                # tokens no longer create process_injection.  Process injection is
+                # decided only from recovered call evidence (detect_behaviours /
+                # detect_capabilities).
                 if token in ("virtualalloc", "writeprocessmemory", "createremotethread"):
-                    found.setdefault("process_injection", MITRE_MAPPING.get("process_injection"))
+                    continue
                 elif token in ("createprocess", "cmd.exe", "powershell", "winexec", "shellexecute"):
                     found.setdefault("command_execution", MITRE_MAPPING.get("command_execution"))
                 elif token in ("loadlibrary", "getprocaddress"):
@@ -320,7 +378,7 @@ BEHAVIOUR_WEIGHTS = {
     "network_communication":        20,
     "registry_write":               25,
     "memory_manipulation":          15,
-    "indirect_call_execution":      15,
+    "indirect_call_execution":       0,
     "internal_function_calls":       2,
     "system_runtime_function":       1,
     "unknown_external_activity":     5,

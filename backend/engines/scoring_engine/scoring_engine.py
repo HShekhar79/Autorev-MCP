@@ -118,6 +118,38 @@ def calculate_risk(features: dict, import_behaviours: list = None) -> int:
 
 
 # -------------------------------
+# EVIDENCE-SUPPORTED MITRE IDS (risk-eligible only)
+# -------------------------------
+def _supported_mitre_ids(mitre_result) -> list:
+    """
+    Return unique, evidence-supported ATT&CK IDs from a fusion result.
+
+    Reads ONLY "mitre_techniques" / "final_mitre". Capability-only hypotheses
+    live under "mitre_candidates" / "candidate_*" and are deliberately never
+    read here, so they cannot inflate the MITRE bonus.
+    """
+    if not isinstance(mitre_result, dict):
+        return []
+
+    ids = (
+        mitre_result.get("mitre_techniques")
+        or mitre_result.get("final_mitre")
+        or []
+    )
+
+    if not isinstance(ids, (list, tuple)):
+        return []
+
+    seen = set()
+    unique = []
+    for t in ids:
+        if isinstance(t, str) and t and t not in seen:
+            seen.add(t)
+            unique.append(t)
+    return unique
+
+
+# -------------------------------
 # FINAL COMBINED RISK
 # -------------------------------
 def calculate_combined_risk(
@@ -146,17 +178,9 @@ def calculate_combined_risk(
     # -------------------------
     # MITRE BONUS (SAFE)
     # -------------------------
-    mitre_bonus = 0
-
-    if isinstance(mitre_result, dict):
-        mitre_list = (
-            mitre_result.get("mitre_techniques")
-            or mitre_result.get("final_mitre")
-            or []
-        )
-
-        if isinstance(mitre_list, list):
-            mitre_bonus = min(len(mitre_list) * 2, 20)
+    # Only evidence-supported techniques count; capability-only candidates
+    # (mitre_candidates) are excluded by construction.
+    mitre_bonus = min(len(_supported_mitre_ids(mitre_result)) * 2, 20)
 
     # -------------------------
     # FINAL WEIGHTED SCORE
@@ -174,4 +198,4 @@ def calculate_combined_risk(
         "import_score": import_score,
         "function_max_score": func_max,
         "mitre_bonus": mitre_bonus
-    }
+    }

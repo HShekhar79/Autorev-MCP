@@ -23,6 +23,18 @@ import pytest
 
 import analysis
 from analysis import run_analysis_pipeline, PipelineExtractionFailedError
+# The pipeline now lives in the shared service; engines are looked up in ITS
+# namespace, so that is where they are patched. analysis.run_analysis_pipeline
+# is the legacy wrapper (adds "verdict" etc.) around the same pipeline.
+from services import analysis_pipeline as pipeline
+
+
+@pytest.fixture(autouse=True)
+def _clear_pipeline_cache():
+    # The shared pipeline caches per path; every test here reuses "dummy.bin".
+    pipeline._pipeline_cache.clear()
+    yield
+    pipeline._pipeline_cache.clear()
 
 
 def _empty_meta(reason):
@@ -63,9 +75,9 @@ def _some_function_analysis():
 # ---------------------------------------------------------------------------
 
 def test_total_extraction_failure_raises():
-    with patch.object(analysis, "run_unified_extraction",
+    with patch.object(pipeline, "run_unified_extraction",
                        return_value=_empty_meta("radare2_failed: simulated")), \
-         patch.object(analysis, "analyze_functions",
+         patch.object(pipeline, "analyze_functions",
                        return_value=_empty_function_analysis()):
         with pytest.raises(PipelineExtractionFailedError):
             run_analysis_pipeline("dummy.bin")
@@ -76,9 +88,9 @@ def test_total_extraction_failure_raises():
 # ---------------------------------------------------------------------------
 
 def test_total_extraction_failure_error_message_contains_reason():
-    with patch.object(analysis, "run_unified_extraction",
+    with patch.object(pipeline, "run_unified_extraction",
                        return_value=_empty_meta("file_not_found")), \
-         patch.object(analysis, "analyze_functions",
+         patch.object(pipeline, "analyze_functions",
                        return_value=_empty_function_analysis()):
         try:
             run_analysis_pipeline("dummy.bin")
@@ -100,9 +112,9 @@ def test_total_extraction_failure_error_message_contains_reason():
 # ---------------------------------------------------------------------------
 
 def test_total_extraction_failure_never_returns_a_result_dict():
-    with patch.object(analysis, "run_unified_extraction",
+    with patch.object(pipeline, "run_unified_extraction",
                        return_value=_empty_meta("radare2_failed: x")), \
-         patch.object(analysis, "analyze_functions",
+         patch.object(pipeline, "analyze_functions",
                        return_value=_empty_function_analysis()):
         try:
             result = run_analysis_pipeline("dummy.bin")
@@ -116,10 +128,10 @@ def test_total_extraction_failure_never_returns_a_result_dict():
 # ---------------------------------------------------------------------------
 
 def test_radare_success_ghidra_failure_completes():
-    with patch.object(analysis, "run_unified_extraction",
+    with patch.object(pipeline, "run_unified_extraction",
                        return_value=_radare_ok(functions=[{"name": "f"}],
                                                 ghidra_available=False)), \
-         patch.object(analysis, "analyze_functions",
+         patch.object(pipeline, "analyze_functions",
                        return_value=_empty_function_analysis()):
         result = run_analysis_pipeline("dummy.bin")
     assert "verdict" in result
@@ -132,12 +144,12 @@ def test_radare_success_ghidra_failure_completes():
 # ---------------------------------------------------------------------------
 
 def test_capa_failure_remains_completed():
-    with patch.object(analysis, "run_unified_extraction",
+    with patch.object(pipeline, "run_unified_extraction",
                        return_value=_radare_ok(functions=[{"name": "f"}],
                                                 imports=["kernel32.dll"])), \
-         patch.object(analysis, "analyze_functions",
+         patch.object(pipeline, "analyze_functions",
                        return_value=_empty_function_analysis()), \
-         patch.object(analysis, "run_capa_analysis",
+         patch.object(pipeline, "run_capa_analysis",
                        return_value={"capabilities": [], "mitre_techniques": [],
                                       "status": "failed"}):
         result = run_analysis_pipeline("dummy.bin")
@@ -152,9 +164,9 @@ def test_capa_failure_remains_completed():
 def test_partial_extraction_completes():
     # Zero functions/imports/strings/calls from the extractor, but
     # function_analysis produced usable evidence — must NOT be FAILED.
-    with patch.object(analysis, "run_unified_extraction",
+    with patch.object(pipeline, "run_unified_extraction",
                        return_value=_empty_meta("radare2_failed: partial")), \
-         patch.object(analysis, "analyze_functions",
+         patch.object(pipeline, "analyze_functions",
                        return_value=_some_function_analysis()):
         result = run_analysis_pipeline("dummy.bin")
     assert "verdict" in result

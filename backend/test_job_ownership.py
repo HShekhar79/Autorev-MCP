@@ -1,130 +1,198 @@
-import json
-from urllib.request import Request, urlopen
-from urllib.error import HTTPError
+"""
+Job-ownership regression tests (in-process, fast, self-contained).
 
-BASE = "http://127.0.0.1:8000"
+Replaces the old live-server urllib script.  Everything on the ownership path is
+REAL:
 
-users = [
-    {
+    * api.routes.analysis router + _resolve_owned_path
+    * auth.dependencies.get_current_user / require_user_ownership
+    * core.job_manager job lookup (real InMemoryJobRepository)
+    * auth.routes /auth/register + /auth/login (real password hashing + JWT)
+    * models.User on an isolated in-memory SQLite database
+
+The ONLY thing replaced is the expensive analysis boundary,
+api.routes.analysis.run_analysis_pipeline, which is reached strictly AFTER the
+ownership check has passed.  The stub records its calls, so the tests also prove
+the pipeline never starts for unauthenticated or foreign requests.
+
+Run:
+    python -m pytest -q test_job_ownership.py
+"""
+
+import uuid
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from api.routes import analysis as analysis_route
+from auth.routes import router as auth_router
+from core import job_manager
+from database import Base, get_db
+from models import User
+
+STUB_RESULT = {"stub": "analysis pipeline not executed"}
+NOT_FOUND = {"detail": "Resource not found."}
+
+USERS = {
+    "a": {
         "email": "autorev.owner.a@example.com",
         "username": "autorev_owner_a",
         "password": "AutoRev-Owner-A-123!",
         "full_name": "AutoRev Owner A",
     },
-    {
+    "b": {
         "email": "autorev.owner.b@example.com",
         "username": "autorev_owner_b",
         "password": "AutoRev-Owner-B-123!",
         "full_name": "AutoRev Owner B",
     },
-]
+}
 
-def post(path, payload):
-    request = Request(
-        BASE + path,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+
+# ---------------------------------------------------------------------------
+# App / database / users (module scope: password hashing is the slow part)
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def session_factory():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
-    try:
-        with urlopen(request, timeout=15) as response:
-            return response.status, json.loads(response.read().decode())
-    except HTTPError as exc:
-        return exc.code, json.loads(exc.read().decode())
+    Base.metadata.create_all(bind=engine)
+    yield sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    engine.dispose()
 
-tokens = []
 
-for user in users:
-    status, data = post("/auth/register", user)
-    print("REGISTER:", user["username"], status)
+@pytest.fixture(scope="module")
+def client(session_factory):
+    app = FastAPI()
+    app.include_router(auth_router)
+    app.include_router(analysis_route.router)
 
-    status, data = post(
-        "/auth/login",
-        {
-            "email": user["email"],
-            "password": user["password"],
-        },
+    def _override_get_db():
+        db = session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = _override_get_db
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture(scope="module")
+def users(client, session_factory):
+    """Register + log in User A and User B through the real auth routes."""
+    out = {}
+    for key, payload in USERS.items():
+        resp = client.post("/auth/register", json=payload)
+        assert resp.status_code in (200, 201), resp.text
+
+        resp = client.post(
+            "/auth/login",
+            json={"email": payload["email"], "password": payload["password"]},
+        )
+        assert resp.status_code == 200, resp.text
+        token = resp.json()["access_token"]
+
+        db = session_factory()
+        try:
+            user_id = db.query(User).filter(User.email == payload["email"]).one().id
+        finally:
+            db.close()
+
+        out[key] = {"id": user_id, "headers": {"Authorization": f"Bearer {token}"}}
+
+    assert out["a"]["id"] != out["b"]["id"]
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Per-test isolation: job repository + analysis-pipeline boundary
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def pipeline_stub(monkeypatch):
+    """Stub ONLY the expensive pipeline; record every call it receives."""
+    calls = []
+
+    def _stub(path):
+        calls.append(path)
+        return dict(STUB_RESULT)
+
+    monkeypatch.setattr(analysis_route, "run_analysis_pipeline", _stub)
+    return calls
+
+
+@pytest.fixture
+def owned_job(users, tmp_path, monkeypatch):
+    """A job owned by User A, created through the real job_manager API."""
+    monkeypatch.setattr(job_manager, "_repo", job_manager.InMemoryJobRepository())
+
+    sample = tmp_path / "ownership_test.bin"
+    sample.write_bytes(b"AutoRev ownership security test")
+
+    job_id = job_manager.generate_job_id()
+    assert job_manager.create_job(
+        job_id, "ownership_test.txt", str(sample), users["a"]["id"]
+    )
+    return {"job_id": job_id, "file_path": str(sample)}
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+def test_owner_access_passes_ownership_layer(client, users, owned_job, pipeline_stub):
+    resp = client.get(f"/analysis/{owned_job['job_id']}", headers=users["a"]["headers"])
+
+    assert resp.status_code == 200
+    assert resp.json() == STUB_RESULT
+    # the real resolver handed the job's stored file_path to the pipeline boundary
+    assert pipeline_stub == [owned_job["file_path"]]
+
+
+def test_cross_user_access_is_404_and_never_runs_pipeline(client, users, owned_job, pipeline_stub):
+    resp = client.get(f"/analysis/{owned_job['job_id']}", headers=users["b"]["headers"])
+
+    assert resp.status_code == 404
+    assert resp.json() == NOT_FOUND
+    assert STUB_RESULT["stub"] not in resp.text
+    assert pipeline_stub == []
+
+
+def test_foreign_and_missing_jobs_return_identical_404(client, users, owned_job, pipeline_stub):
+    foreign = client.get(f"/analysis/{owned_job['job_id']}", headers=users["b"]["headers"])
+    missing_for_b = client.get(f"/analysis/{uuid.uuid4()}", headers=users["b"]["headers"])
+    missing_for_a = client.get(f"/analysis/{uuid.uuid4()}", headers=users["a"]["headers"])
+
+    for resp in (foreign, missing_for_b, missing_for_a):
+        assert resp.status_code == 404
+        assert resp.json() == NOT_FOUND
+    # no existence oracle: a foreign job is indistinguishable from a missing one
+    assert foreign.status_code == missing_for_b.status_code == missing_for_a.status_code
+    assert foreign.json() == missing_for_b.json() == missing_for_a.json()
+    assert pipeline_stub == []
+
+
+def test_unauthenticated_access_is_401_and_never_runs_pipeline(client, owned_job, pipeline_stub):
+    resp = client.get(f"/analysis/{owned_job['job_id']}")
+
+    assert resp.status_code == 401
+    assert resp.json() == {"detail": "Authentication required."}
+    assert resp.headers.get("www-authenticate") == "Bearer"
+    assert pipeline_stub == []
+
+
+def test_invalid_token_is_401_and_never_runs_pipeline(client, owned_job, pipeline_stub):
+    resp = client.get(
+        f"/analysis/{owned_job['job_id']}",
+        headers={"Authorization": "Bearer not-a-valid-token"},
     )
 
-    print("LOGIN:", user["username"], status)
-    tokens.append(data["access_token"])
-
-token_a = tokens[0]
-token_b = tokens[1]
-
-# Create a harmless temporary text upload as User A.
-boundary = "----AutoRevOwnershipBoundary"
-file_data = b"AutoRev ownership security test"
-
-body = (
-    f"--{boundary}\r\n"
-    'Content-Disposition: form-data; name="file"; filename="ownership_test.txt"\r\n'
-    "Content-Type: text/plain\r\n"
-    "\r\n"
-).encode() + file_data + (
-    f"\r\n--{boundary}--\r\n"
-).encode()
-
-request = Request(
-    BASE + "/upload",
-    data=body,
-    headers={
-        "Authorization": f"Bearer {token_a}",
-        "Content-Type": f"multipart/form-data; boundary={boundary}",
-    },
-    method="POST",
-)
-
-with urlopen(request, timeout=15) as response:
-    upload_data = json.loads(response.read().decode())
-
-job_id = upload_data["job_id"]
-
-print("UPLOAD STATUS:", response.status)
-print("JOB ID:", job_id)
-
-# User A accesses own job.
-request = Request(
-    BASE + f"/analysis/{job_id}",
-    headers={"Authorization": f"Bearer {token_a}"},
-)
-
-try:
-    with urlopen(request, timeout=15) as response:
-        print("OWNER ACCESS STATUS:", response.status)
-except HTTPError as exc:
-    print("OWNER ACCESS STATUS:", exc.code)
-
-# User B attempts User A's job.
-request = Request(
-    BASE + f"/analysis/{job_id}",
-    headers={"Authorization": f"Bearer {token_b}"},
-)
-
-try:
-    with urlopen(request, timeout=15) as response:
-        print("CROSS-USER ACCESS STATUS:", response.status)
-        print("CROSS-USER OWNERSHIP TEST: FAILED")
-except HTTPError as exc:
-    print("CROSS-USER ACCESS STATUS:", exc.code)
-    print(
-        "CROSS-USER OWNERSHIP TEST:",
-        "PASS" if exc.code == 404 else "FAILED",
-    )
-
-# No authentication.
-request = Request(
-    BASE + f"/analysis/{job_id}",
-    method="GET",
-)
-
-try:
-    with urlopen(request, timeout=15) as response:
-        print("UNAUTHENTICATED ACCESS STATUS:", response.status)
-        print("UNAUTHENTICATED TEST: FAILED")
-except HTTPError as exc:
-    print("UNAUTHENTICATED ACCESS STATUS:", exc.code)
-    print(
-        "UNAUTHENTICATED TEST:",
-        "PASS" if exc.code == 401 else "FAILED",
-    )
+    assert resp.status_code == 401
+    assert pipeline_stub == []

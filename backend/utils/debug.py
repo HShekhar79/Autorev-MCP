@@ -1,8 +1,13 @@
 import json
+import sys
 from datetime import datetime, timezone
 import traceback
 
 DEBUG_MODE = True
+
+# All diagnostics go to stderr. stdout is reserved for protocol traffic
+# (the MCP stdio transport reads JSON-RPC from the server's stdout), so
+# anything printed there corrupts the stream.
 
 
 def _ts():
@@ -12,31 +17,31 @@ def _ts():
 def debug_log(label, data):
     if not DEBUG_MODE:
         return
-    print(f"\n[{_ts()}] [DEBUG] {label}:")
-    print(data)
+    print(f"\n[{_ts()}] [DEBUG] {label}:", file=sys.stderr)
+    print(data, file=sys.stderr)
 
 
 def debug_pretty(label, data):
     if not DEBUG_MODE:
         return
-    print(f"\n[{_ts()}] [DEBUG] {label}:")
+    print(f"\n[{_ts()}] [DEBUG] {label}:", file=sys.stderr)
     try:
-        print(json.dumps(data, indent=4))
+        print(json.dumps(data, indent=4), file=sys.stderr)
     except Exception:
-        print(data)
+        print(data, file=sys.stderr)
 
 
 def debug_error(label, error):
     if not DEBUG_MODE:
         return
-    print(f"\n[{_ts()}] [ERROR] {label}: {str(error)}")
-    traceback.print_exc()
+    print(f"\n[{_ts()}] [ERROR] {label}: {str(error)}", file=sys.stderr)
+    traceback.print_exc(file=sys.stderr)
 
 
 def debug_stage(stage_name):
     if not DEBUG_MODE:
         return
-    print(f"\n[{_ts()}] ======== {stage_name.upper()} ========")
+    print(f"\n[{_ts()}] ======== {stage_name.upper()} ========", file=sys.stderr)
 
 
 def debug_len(label, data):
@@ -50,4 +55,4 @@ def debug_len(label, data):
         except Exception:
             length = "N/A"
 
-    print(f"\n[{_ts()}] [DEBUG] {label} COUNT: {length}")
+    print(f"\n[{_ts()}] [DEBUG] {label} COUNT: {length}", file=sys.stderr)

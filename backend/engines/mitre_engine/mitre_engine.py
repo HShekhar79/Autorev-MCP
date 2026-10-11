@@ -9,9 +9,7 @@ MITRE_DATABASE = {
 
     "execution": {
         "command_execution": ["T1059", "T1059.003"],
-        "process_creation": ["T1059", "T1059.003"],
         "powershell": ["T1059.001"],
-        "indirect_call_execution": ["T1059"],
     },
 
     "persistence": {
@@ -25,16 +23,15 @@ MITRE_DATABASE = {
         "anti_debugging": ["T1622"],
         "anti_vm": ["T1497"],
         "anti_sandbox": ["T1497"],
-        "dynamic_api_resolution": ["T1027", "T1620"],
-        "dynamic_loading": ["T1027", "T1620"],
+        # Conservative mapping: generic behaviours are NOT ATT&CK proof. Deliberately
+        # unmapped (context/correlation required before any technique is asserted):
+        #   memory_allocation, memory_protection_change  (T1055 needs injection context)
+        #   dynamic_loading, dynamic_api_resolution      (T1027 / T1620 need
+        #                                                 obfuscation / reflective-loading context)
         "process_hollowing": ["T1055.012"],
         "process_injection": ["T1055"],
-        "memory_protection_change": ["T1055"],
         "packing_detection": ["T1027.002"],
-        "memory_allocation": ["T1055"],
         "registry_modification": ["T1112"],
-        "random_generation": ["T1027"],
-        "indirect_call_execution": ["T1059"],
     },
 
     "credential_access": {
@@ -53,44 +50,30 @@ MITRE_DATABASE = {
         "registry_query": ["T1012"],
     },
 
-    "lateral_movement": {
-        "remote_execution": ["T1021"],
-    },
 
     "collection": {
         "keylogging": ["T1056"],
-        "file_creation": ["T1119"],
-        "file_modification": ["T1119"],
-        "file_copy": ["T1119"],
-        "file_move": ["T1074"],
-        "cryptographic_activity": ["T1560"],
+        # file_creation / file_modification deliberately unmapped: generic file I/O does
+        # not establish automated collection (T1119).
     },
 
     "exfiltration": {
         "data_exfiltration": ["T1041"],
-        "ftp_communication": ["T1048"],
     },
 
     "command_and_control": {
-        "network_communication": ["T1071"],
-        "command_and_control": ["T1071"],
-        "network_activity": ["T1071"],
+        # network_communication / network_activity deliberately unmapped: generic socket
+        # use does not establish an application-layer protocol (T1071).
         "payload_download": ["T1105"],
-        "http_communication": ["T1071.001"],
-        "ftp_communication": ["T1071.002"],
-        "dns_activity": ["T1071.004"],
     },
 
     "impact": {
         "file_deletion": ["T1485"],
-        "data_encryption": ["T1486"],
         "shutdown_system": ["T1529"],
         "reboot_system": ["T1529"],
-        "process_termination": ["T1489"],
     },
 
     "privilege_escalation": {
-        "privilege_escalation": ["T1068"],
         "token_manipulation": ["T1134"],
     },
 }

@@ -7,6 +7,7 @@ from utils.debug import debug_log
 
 # ── Engine imports ─────────────────────────────────────────────────────────
 from engines.extractor_engine.radare_extractor import (
+    RadareExtractor,
     extract_functions as r2_extract_functions,
     extract_imports  as r2_extract_imports,
     extract_strings  as r2_extract_strings,
@@ -68,14 +69,41 @@ def _merge_strings(r2_strings: list[str], ghidra_strings: list[str]) -> list[str
     return result
 
 
-def _merge_calls(ghidra_calls: list[str]) -> list[str]:
+def _merge_calls(ghidra_calls: list[str], *, r2_calls: Optional[list[str]] = None) -> list[str]:
+    # Radare2 calls first (same precedence as _merge_functions/_merge_strings),
+    # then Ghidra; first occurrence wins, so the order is deterministic.
     seen: set[str] = set()
     result: list[str] = []
-    for c in ghidra_calls:
+    for c in list(r2_calls or []) + list(ghidra_calls or []):
         if c and c not in seen:
             seen.add(c)
             result.append(c)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Radare2 call extraction — delegates to the hardened RadareExtractor API
+# ---------------------------------------------------------------------------
+
+def _r2_extract_calls(file_path: str) -> list[str]:
+    """
+    Best-effort Radare2 call extraction. Reuses
+    RadareExtractor.get_calls_from_all_functions() (hard timeouts, per-call
+    timeout, aggregate budget, pdfj->pdf fallback, numeric-address-only
+    targeting, partial results). No r2 command is built here. Any failure
+    degrades to [] and never raises.
+    """
+    extractor = None
+    try:
+        extractor = RadareExtractor(file_path)
+        extractor.open()
+        return extractor.get_calls_from_all_functions() or []
+    except Exception as exc:
+        debug_log("[UNIFIED] radare2 calls FAIL", f"{type(exc).__name__}: {exc}")
+        return []
+    finally:
+        if extractor is not None:
+            extractor.close()
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +117,7 @@ def run_unified_extraction(file_path: str) -> dict:
     r2_functions: list = []
     r2_imports:   list = []
     r2_strings:   list[str] = []
+    r2_calls:     list[str] = []
     r2_available = False
 
     try:
@@ -102,6 +131,13 @@ def run_unified_extraction(file_path: str) -> dict:
         )
     except Exception as exc:
         debug_log("[UNIFIED] radare2 FAIL", f"{type(exc).__name__}: {exc}")
+
+    # Calls only when radare2 itself worked (avoid a second timeout on a
+    # binary r2 already failed to open). Failure here never affects
+    # r2_available or the functions/imports/strings above.
+    if r2_available:
+        r2_calls = _r2_extract_calls(file_path)
+        debug_log("[UNIFIED] radare2 calls", f"{len(r2_calls)} calls")
 
     # ── GHIDRA ─────────────────────────────────────────────────────────────
     ghidra_result:    Optional[dict] = None
@@ -150,7 +186,7 @@ def run_unified_extraction(file_path: str) -> dict:
 
     merged_functions = _merge_functions(r2_functions, ghidra_functions)
     merged_strings   = _merge_strings(r2_strings, ghidra_strings)
-    merged_calls     = _merge_calls(ghidra_calls)
+    merged_calls     = _merge_calls(ghidra_calls, r2_calls=r2_calls)
 
     elapsed = round(time.monotonic() - t0, 2)
 

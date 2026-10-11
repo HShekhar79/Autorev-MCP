@@ -1,0 +1,436 @@
+@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Space+Mono:wght@400;700&family=Orbitron:wght@400;600;700;900&family=Inter:wght@300;400;500;600&display=swap');
+
+/* ── Design Tokens ─────────────────────────────────────────────────────────── */
+:root {
+  --cyan:        #00f0ff;
+  --cyan-dim:    rgba(0, 240, 255, 0.15);
+  --cyan-glow:   rgba(0, 240, 255, 0.5);
+  --red:         #ff3c6e;
+  --amber:       #ffb347;
+  --green:       #00ff88;
+
+  --bg-deep:     #020810;
+  --bg-mid:      #060e1e;
+  --bg-panel:    rgba(4, 12, 28, 0.97);
+
+  --text-bright: #e0f4ff;
+  --text-mid:    #a0c4d8;
+  --text-dim:    #6b8fa8;
+
+  --border:      rgba(0, 240, 255, 0.12);
+  --border-hover:rgba(0, 240, 255, 0.28);
+
+  --font-display:'Orbitron', monospace;
+  --font-ui:     'Rajdhani', sans-serif;
+  --font-mono:   'Space Mono', monospace;
+  --font-body:   'Inter', sans-serif;
+
+  /* Layout */
+  --max-w:       1200px;
+  --max-w-narrow:840px;
+  --section-px:  clamp(1rem, 4vw, 2rem);
+  --section-py:  clamp(3rem, 8vw, 6rem);
+}
+
+/* ── Reset ──────────────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg-deep);
+  color: var(--text-bright);
+  font-family: var(--font-body);
+  overflow-x: hidden;
+  min-height: 100vh;
+  min-width: 320px;
+}
+
+/* ── Scrollbar ──────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar       { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: var(--bg-mid); }
+::-webkit-scrollbar-thumb { background: var(--cyan-dim); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--cyan-glow); }
+
+/* ── Focus Visibility ───────────────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+:focus:not(:focus-visible) { outline: none; }
+
+/* ── Glass Card ─────────────────────────────────────────────────────────────── */
+/*
+ * !important is intentional here.
+ * DashboardPage and other components set inline background styles on their
+ * card divs (e.g. background: color+"05"). Those inline styles have higher
+ * specificity than a class rule, making cards transparent even after the
+ * class value was corrected. !important on background overrides all inline
+ * backgrounds so every card renders opaque and readable over the matrix rain.
+ */
+.glass {
+  background: rgba(4, 12, 28, 0.97) !important;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.glass:hover { border-color: var(--border-hover); }
+
+/* ── Typography ─────────────────────────────────────────────────────────────── */
+.section-title {
+  font-family: var(--font-display);
+  font-size: clamp(1.75rem, 4vw, 2.75rem);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+}
+
+/* ── Buttons ────────────────────────────────────────────────────────────────── */
+.btn-primary {
+  background: rgba(0, 240, 255, 0.08);
+  border: 1px solid rgba(0, 240, 255, 0.4);
+  color: var(--cyan);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  padding: 10px 28px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.25s, box-shadow 0.25s, color 0.25s;
+  position: relative;
+  overflow: hidden;
+  text-decoration: none;
+  display: inline-block;
+  min-height: 40px;
+  line-height: 1;
+  vertical-align: middle;
+}
+.btn-primary::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(0, 240, 255, 0.1), transparent);
+  transform: translateX(-100%);
+  transition: transform 0.5s;
+}
+.btn-primary:hover::before  { transform: translateX(100%); }
+.btn-primary:hover {
+  background: rgba(0, 240, 255, 0.15);
+  box-shadow: 0 0 24px rgba(0, 240, 255, 0.3), inset 0 0 12px rgba(0, 240, 255, 0.05);
+  color: #fff;
+}
+.btn-primary:active { transform: scale(0.98); }
+.btn-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.btn-ghost {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 8px 20px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: border-color 0.2s, color 0.2s;
+  text-decoration: none;
+  display: inline-block;
+  min-height: 40px;
+  line-height: 1;
+  vertical-align: middle;
+}
+.btn-ghost:hover { border-color: var(--cyan-glow); color: var(--cyan); }
+.btn-ghost:active { transform: scale(0.98); }
+
+/* ── Neon Helpers ───────────────────────────────────────────────────────────── */
+.neon-text {
+  color: var(--cyan);
+  text-shadow: 0 0 18px rgba(0, 234, 255, 0.7), 0 0 36px rgba(0, 234, 255, 0.35);
+}
+
+/* ── Page Layout ────────────────────────────────────────────────────────────── */
+.page-wrapper {
+  position: relative;
+  z-index: 1;
+}
+
+.section-inner {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: 0 var(--section-px);
+}
+
+/* ── Grid Utilities ─────────────────────────────────────────────────────────── */
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+.grid-4 {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+@media (max-width: 1024px) {
+  .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 768px) {
+  .grid-2,
+  .grid-3,
+  .grid-4 { grid-template-columns: 1fr; }
+}
+
+/* ── Scan Line Effect ───────────────────────────────────────────────────────── */
+.scanlines::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.05) 2px,
+    rgba(0, 0, 0, 0.05) 4px
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ── Animations ─────────────────────────────────────────────────────────────── */
+@keyframes flicker {
+  0%, 94%, 100% { opacity: 1; }
+  95%           { opacity: 0.82; }
+  97%           { opacity: 0.96; }
+  98%           { opacity: 0.78; }
+}
+
+@keyframes pulse-glow {
+  0%,  100% { box-shadow: 0 0 8px  rgba(0, 240, 255, 0.5); }
+  50%       { box-shadow: 0 0 22px rgba(0, 240, 255, 0.75), 0 0 42px rgba(0, 240, 255, 0.25); }
+}
+
+.pulse { animation: pulse-glow 2s ease-in-out infinite; }
+
+/* ── Accessibility: reduced motion ─────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+
+/* ── Footer layout ──────────────────────────────────────────────────────────── */
+/* Mobile-first. <480: 1 col · 480-1023: 2 cols (brand spans) · >=1024: 5 cols   */
+.arise-footer-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2rem 1.5rem;
+  align-items: start;
+}
+.arise-footer-brand { grid-column: 1 / -1; }
+
+@media (max-width: 479px) {
+  .arise-footer-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (min-width: 1024px) {
+  .arise-footer-grid {
+    grid-template-columns: minmax(0, 1.6fr) repeat(4, minmax(0, 1fr));
+    gap: 2rem 2.5rem;
+  }
+  .arise-footer-brand { grid-column: auto; }
+}
+
+/* ── Footer technology links ────────────────────────────────────────────────── */
+.arise-tech-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-bottom: 1px dotted transparent;
+  color: var(--text-dim);
+  font-family: var(--font-body);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  transition: color 0.2s, border-color 0.2s;
+}
+@media (pointer: coarse) { .arise-tech-link { min-height: 32px; } }
+.arise-tech-link:hover { color: var(--cyan); border-bottom-color: var(--cyan-glow); }
+.arise-tech-link-arrow {
+  /* always reserved, so hover never shifts layout */
+  opacity: 0.45;
+  font-size: 14px;
+  line-height: 1;
+  transition: opacity 0.2s, transform 0.2s;
+}
+.arise-tech-link:hover .arise-tech-link-arrow,
+.arise-tech-link:focus-visible .arise-tech-link-arrow { opacity: 1; transform: translateX(2px); }
+
+/* ── Technology details dialog ──────────────────────────────────────────────── */
+.arise-tech-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(0.75rem, 3vw, 1.5rem);
+  background: rgba(2, 8, 16, 0.82);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: arise-fade-in 0.18s ease-out;
+}
+.arise-tech-dialog {
+  width: 100%;
+  max-width: 560px;
+  max-height: min(86vh, 720px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: rgba(6, 14, 30, 0.99);
+  border: 1px solid var(--border-hover);
+  border-radius: 8px;
+  box-shadow: 0 0 40px rgba(0, 240, 255, 0.08), 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+.arise-tech-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem 1.4rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.arise-tech-kind {
+  display: inline-block;
+  margin-bottom: 0.5rem;
+  padding: 2px 8px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--cyan);
+  border: 1px solid rgba(0, 240, 255, 0.25);
+  border-radius: 3px;
+  background: rgba(0, 240, 255, 0.05);
+}
+.arise-tech-title {
+  font-family: var(--font-display);
+  font-size: clamp(1.15rem, 3vw, 1.4rem);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-bright);
+}
+.arise-tech-summary {
+  margin-top: 0.35rem;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.arise-tech-close {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+.arise-tech-close:hover { color: var(--cyan); border-color: var(--cyan-glow); }
+
+.arise-tech-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.1rem 1.4rem 0.5rem;
+}
+.arise-tech-section { margin-bottom: 1.05rem; }
+.arise-tech-label {
+  margin-bottom: 0.35rem;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.arise-tech-label.is-accent { color: var(--cyan); }
+.arise-tech-text,
+.arise-tech-list {
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--text-mid);
+}
+.arise-tech-list { list-style: none; }
+.arise-tech-list li { position: relative; padding-left: 1rem; }
+.arise-tech-list li::before { content: '›'; position: absolute; left: 0; color: var(--cyan); }
+.arise-tech-note {
+  margin-bottom: 1rem;
+  padding: 0.6rem 0.8rem;
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  border-left: 2px solid var(--border-hover);
+  background: rgba(0, 240, 255, 0.03);
+}
+.arise-tech-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.85rem 1.4rem;
+  border-top: 1px solid var(--border);
+}
+.arise-tech-ext {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: var(--cyan);
+  text-decoration: none;
+}
+.arise-tech-ext:hover { text-decoration: underline; }
+.arise-tech-disclaimer {
+  font-family: var(--font-body);
+  font-size: 10.5px;
+  color: rgba(107, 143, 168, 0.7);
+  line-height: 1.4;
+  max-width: 280px;
+}
+.arise-sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+@keyframes arise-fade-in { from { opacity: 0; } to { opacity: 1; } }

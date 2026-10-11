@@ -8,10 +8,12 @@ from typing import Optional, Any
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from database import create_tables, get_db, AnalysisDB, UserDB
+from database import get_db, init_db
 from auth.routes import router as auth_router
-from auth.dependencies import get_current_user, check_upload_limit
-from auth.utils import get_upload_limit
+from auth.dependencies import get_current_user
+from auth.ownership import require_owned_job
+from core.job_manager import create_job
+from models import User
 import json
 from datetime import datetime
 
@@ -116,7 +118,7 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
-create_tables()
+init_db()
 app.include_router(auth_router)
 
 
@@ -329,7 +331,11 @@ def health():
 
 
 @app.post("/upload-analyze")
-async def upload_analyze(request: Request, file: UploadFile = File(...)):
+async def upload_analyze(
+    request: Request,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
@@ -386,7 +392,25 @@ async def upload_analyze(request: Request, file: UploadFile = File(...)):
 
     log.info(f"[{job_id}] Accepted: {display_name!r} ({bytes_written} bytes) type={magic_label}")
 
-    task = run_analysis_task.delay(str(file_path), display_name)
+    # Bind the task to its owner: the Celery task id IS the job_id, and the
+    # JobRecord (user_id) is the authoritative ownership record that
+    # /task-status, /task and /report/* check before touching Celery.
+    if not create_job(
+        job_id=job_id,
+        filename=display_name,
+        file_path=str(file_path),
+        user_id=current_user.id,
+    ):
+        try:
+            file_path.unlink()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail="Job creation failed")
+
+    task = run_analysis_task.apply_async(
+        args=[str(file_path), display_name],
+        task_id=job_id,
+    )
     log.info(f"[{job_id}] Enqueued task {task.id}")
 
     return JSONResponse(
@@ -396,7 +420,8 @@ async def upload_analyze(request: Request, file: UploadFile = File(...)):
 
 
 @app.get("/task-status/{task_id}")
-def task_status(task_id: str):
+def task_status(task_id: str, current_user: User = Depends(get_current_user)):
+    require_owned_job(task_id, current_user)
     try:
         result: AsyncResult = AsyncResult(task_id, app=celery_app)
     except Exception as exc:
@@ -457,7 +482,8 @@ async def chat_mitre(req: ChatMitreRequest):
 
 
 @app.delete("/task/{task_id}")
-def revoke_task(task_id: str):
+def revoke_task(task_id: str, current_user: User = Depends(get_current_user)):
+    require_owned_job(task_id, current_user)
     try:
         celery_app.control.revoke(task_id, terminate=True)
     except Exception as exc:

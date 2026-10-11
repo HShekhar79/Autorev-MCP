@@ -1,15 +1,14 @@
 def rank_suspicious_functions(function_results, top_n=10):
 
     if not function_results or not isinstance(function_results, list):
-        if not results:
-            return [{
-                "rank": 0,
-                "function_name": "no_suspicious_function",
-                "risk_score": 0,
-                "behaviour": [],
-                "calls": [],
-                "note": "No suspicious functions detected"
-            }]
+        return [{
+            "rank": 0,
+            "function_name": "no_suspicious_function",
+            "risk_score": 0,
+            "behaviour": [],
+            "calls": [],
+            "note": "No suspicious functions detected"
+        }]
 
     ranked_candidates = []
 

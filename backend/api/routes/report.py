@@ -23,9 +23,16 @@ _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel
+
+from auth.dependencies import (
+    authentication_required,
+    get_current_user_optional,
+)
+from auth.ownership import require_owned_job
+from models import User
 
 log = logging.getLogger("arise.report")
 router = APIRouter()
@@ -71,13 +78,23 @@ class PreviewRequest(BaseModel):
 # RESULT RESOLUTION
 # ---------------------------------------------------------------------------
 
-def _resolve_result(task_id: Optional[str], job_id: Optional[str]) -> tuple[dict, Optional[str]]:
+def _resolve_result(
+    task_id: Optional[str],
+    job_id: Optional[str],
+    current_user: Optional[User] = None,
+) -> tuple[dict, Optional[str]]:
     """
     Resolve a pipeline result dict from either:
       task_id → Celery backend (upload_api.py path)
       job_id  → In-memory job store (main.py legacy path)
     """
     if task_id:
+        # task_id is the job_id of the authenticated /upload-analyze job, so
+        # the JobRecord owner decides access. Checked BEFORE Celery is touched;
+        # missing and foreign task ids return the same 404.
+        if current_user is None:
+            raise authentication_required()
+        require_owned_job(task_id, current_user)
         try:
             from celery_worker import celery_app
             from celery.result import AsyncResult
@@ -98,14 +115,18 @@ def _resolve_result(task_id: Optional[str], job_id: Optional[str]) -> tuple[dict
             raise HTTPException(status_code=500, detail="Celery worker not available in this environment")
 
     elif job_id:
+        # job_id path is user-owned data: authentication + ownership are
+        # mandatory and run BEFORE any filesystem or pipeline access.
+        if current_user is None:
+            raise authentication_required()
+        job = require_owned_job(job_id, current_user)
         try:
-            from core.job_manager import get_job
-            from api.routes.analysis import full_pipeline, UPLOAD_DIR
-            job = get_job(job_id)
-            if not job:
-                raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-            file_path = os.path.join(UPLOAD_DIR, job.get("filename", ""))
-            if not os.path.isfile(file_path):
+            from api.routes.analysis import full_pipeline
+            # Authoritative stored sample path (<job_id>.bin written by the
+            # upload endpoint). The client-supplied display filename is NEVER
+            # used to build a filesystem path.
+            file_path = job.get("file_path")
+            if not file_path or not os.path.isfile(file_path):
                 # Job may have result cached
                 cached = job.get("result")
                 if cached and isinstance(cached, dict):
@@ -144,7 +165,10 @@ def list_sections():
 
 
 @router.post("/report/generate")
-def generate_report(req: ReportRequest):
+def generate_report(
+    req: ReportRequest,
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
     """
     Generate and stream a PDF report.
 
@@ -161,8 +185,10 @@ def generate_report(req: ReportRequest):
             detail=f"PDF engine unavailable: {exc}. Install: pip install reportlab"
         )
 
-    result, resolved_path = _resolve_result(req.task_id, req.job_id)
-    file_path = req.file_path or resolved_path
+    result, resolved_path = _resolve_result(req.task_id, req.job_id, current_user)
+    # req.file_path is client-controlled and is intentionally ignored: only the
+    # server-resolved authoritative path may reach the PDF engine.
+    file_path = resolved_path
     sections  = _validate_sections(req.sections)
 
     meta      = result.get("analysis_meta", {})
@@ -197,9 +223,12 @@ def generate_report(req: ReportRequest):
 
 
 @router.post("/report/preview")
-def preview_report(req: PreviewRequest):
+def preview_report(
+    req: PreviewRequest,
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
     """Return per-section item counts for the frontend checkbox preview."""
-    result, _ = _resolve_result(req.task_id, req.job_id)
+    result, _ = _resolve_result(req.task_id, req.job_id, current_user)
 
     meta         = result.get("analysis_meta", {})
     verdict_raw  = result.get("verdict", {})
