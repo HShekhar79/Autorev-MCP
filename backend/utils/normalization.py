@@ -21,10 +21,13 @@ Usage:
     name = normalize_behavior("anti_debug")             # → "anti_debugging"
 """
 
+import copy
 import difflib
 import hashlib
 import logging
+import math
 import os
+from typing import Any, Optional
 from utils.debug import debug_log
 
 log = logging.getLogger("arise.normalization")
@@ -504,6 +507,34 @@ def _coerce_list(val) -> list:
     return [val]
 
 
+def _coerce_cvss_score(value: Any) -> Optional[float]:
+    """
+    Safely parse and validate a CVSS score as a finite float in [0.0, 10.0].
+
+    Returns:
+        float score in [0.0, 10.0] if valid, or None if malformed/untrustworthy:
+        - Booleans (True/False) -> None (rejected; not treated as 1.0/0.0)
+        - Non-finite (NaN, +Inf, -Inf) -> None (rejected)
+        - Numeric strings (e.g. "7.5", "  8.2 ") -> parsed float
+        - Non-numeric strings or unparseable types -> None (rejected)
+        - Out-of-range (< 0.0 or > 10.0) -> None (rejected; not trustworthy)
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        val = float(value)
+    except (ValueError, TypeError):
+        return None
+
+    if not math.isfinite(val):
+        return None
+
+    if val < 0.0 or val > 10.0:
+        return None
+
+    return val
+
+
 def normalise_result(
     raw: dict,
     elapsed: float = 0.0,
@@ -516,19 +547,74 @@ def normalise_result(
         raw = {}
     meta = raw.get("analysis_meta", {}) if isinstance(raw.get("analysis_meta"), dict) else {}
 
-    cvss_raw = raw.get("cvss", raw.get("cvss_score", raw.get("cvss_results", 0)))
-    if isinstance(cvss_raw, dict):
-        cvss_val    = float(cvss_raw.get("cvss_score", 0) or 0)
-        cvss_detail = cvss_raw
-    elif isinstance(cvss_raw, (int, float)):
-        cvss_val    = float(cvss_raw)
-        cvss_detail = {
-            "cvss_score": cvss_val,
-            "risk_level": "HIGH" if cvss_val >= 7 else "MEDIUM" if cvss_val >= 4 else "LOW",
-        }
+    existing_detail = raw.get("cvss_detail")
+    cvss_raw = raw.get("cvss")
+    cvss_score_raw = raw.get("cvss_score")
+    cvss_results_raw = raw.get("cvss_results")
+
+    if isinstance(existing_detail, dict):
+        candidate_dict = existing_detail
+    elif isinstance(cvss_raw, dict):
+        candidate_dict = cvss_raw
+    elif isinstance(cvss_results_raw, dict):
+        candidate_dict = cvss_results_raw
     else:
-        cvss_val    = 0.0
-        cvss_detail = {"cvss_score": 0.0, "risk_level": "NONE"}
+        candidate_dict = None
+
+    if candidate_dict is not None:
+        cvss_detail = copy.deepcopy(candidate_dict)
+        raw_val = cvss_detail.get("cvss_score")
+        if raw_val is None or isinstance(raw_val, bool):
+            raw_val = cvss_score_raw if (cvss_score_raw is not None and not isinstance(cvss_score_raw, bool)) else cvss_raw
+
+        parsed_val = _coerce_cvss_score(raw_val)
+        if parsed_val is not None:
+            cvss_val = parsed_val
+        else:
+            if raw_val is not None:
+                log.warning(
+                    f"normalise_result: invalid or out-of-range cvss score {raw_val!r}; falling back to 0.0"
+                )
+            cvss_val = 0.0
+
+        cvss_detail["cvss_score"] = cvss_val
+
+        expected_risk = (
+            "CRITICAL" if cvss_val >= 9.0 else
+            "HIGH" if cvss_val >= 7.0 else
+            "MEDIUM" if cvss_val >= 4.0 else
+            "LOW" if cvss_val > 0.0 else
+            "NONE"
+        )
+        if "risk_level" not in cvss_detail or not cvss_detail["risk_level"]:
+            cvss_detail["risk_level"] = expected_risk
+        elif str(cvss_detail["risk_level"]).upper() != expected_risk:
+            log.warning(
+                f"normalise_result: preserved cvss risk_level '{cvss_detail['risk_level']}' "
+                f"which differs from standard '{expected_risk}' for score {cvss_val}"
+            )
+    else:
+        raw_scalar = cvss_raw if (cvss_raw is not None and not isinstance(cvss_raw, bool)) else cvss_score_raw
+        parsed_val = _coerce_cvss_score(raw_scalar)
+        if parsed_val is not None:
+            cvss_val = parsed_val
+            cvss_detail = {
+                "cvss_score": cvss_val,
+                "risk_level": (
+                    "CRITICAL" if cvss_val >= 9.0 else
+                    "HIGH" if cvss_val >= 7.0 else
+                    "MEDIUM" if cvss_val >= 4.0 else
+                    "LOW" if cvss_val > 0.0 else
+                    "NONE"
+                ),
+            }
+        else:
+            if raw_scalar is not None:
+                log.warning(
+                    f"normalise_result: invalid or out-of-range cvss score {raw_scalar!r}; falling back to 0.0 NONE"
+                )
+            cvss_val = 0.0
+            cvss_detail = {"cvss_score": 0.0, "risk_level": "NONE"}
 
     mitre        = _resolve_mitre(raw)
     verdict      = _resolve_verdict(raw)
