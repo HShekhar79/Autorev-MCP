@@ -518,12 +518,13 @@ def _coerce_cvss_score(value: Any) -> Optional[float]:
         - Numeric strings (e.g. "7.5", "  8.2 ") -> parsed float
         - Non-numeric strings or unparseable types -> None (rejected)
         - Out-of-range (< 0.0 or > 10.0) -> None (rejected; not trustworthy)
+        - Large integer overflow (e.g. 10**400) -> None (rejected)
     """
     if value is None or isinstance(value, bool):
         return None
     try:
         val = float(value)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return None
 
     if not math.isfinite(val):
@@ -565,36 +566,43 @@ def normalise_result(
         cvss_detail = copy.deepcopy(candidate_dict)
         raw_val = cvss_detail.get("cvss_score")
         if raw_val is None or isinstance(raw_val, bool):
-            raw_val = cvss_score_raw if (cvss_score_raw is not None and not isinstance(cvss_score_raw, bool)) else cvss_raw
+            candidate_fallback = cvss_score_raw if (cvss_score_raw is not None and not isinstance(cvss_score_raw, bool)) else cvss_raw
+            if candidate_fallback is not None and not isinstance(candidate_fallback, bool):
+                raw_val = candidate_fallback
 
         parsed_val = _coerce_cvss_score(raw_val)
         if parsed_val is not None:
             cvss_val = parsed_val
-        else:
-            if raw_val is not None:
-                log.warning(
-                    f"normalise_result: invalid or out-of-range cvss score {raw_val!r}; falling back to 0.0"
-                )
-            cvss_val = 0.0
+            cvss_detail["cvss_score"] = cvss_val
 
-        cvss_detail["cvss_score"] = cvss_val
-
-        expected_risk = (
-            "CRITICAL" if cvss_val >= 9.0 else
-            "HIGH" if cvss_val >= 7.0 else
-            "MEDIUM" if cvss_val >= 4.0 else
-            "LOW" if cvss_val > 0.0 else
-            "NONE"
-        )
-        if "risk_level" not in cvss_detail or not cvss_detail["risk_level"]:
-            cvss_detail["risk_level"] = expected_risk
-        elif str(cvss_detail["risk_level"]).upper() != expected_risk:
-            log.warning(
-                f"normalise_result: preserved cvss risk_level '{cvss_detail['risk_level']}' "
-                f"which differs from standard '{expected_risk}' for score {cvss_val}"
+            expected_risk = (
+                "CRITICAL" if cvss_val >= 9.0 else
+                "HIGH" if cvss_val >= 7.0 else
+                "MEDIUM" if cvss_val >= 4.0 else
+                "LOW" if cvss_val > 0.0 else
+                "NONE"
             )
+            if "risk_level" not in cvss_detail or not cvss_detail["risk_level"]:
+                cvss_detail["risk_level"] = expected_risk
+            elif str(cvss_detail["risk_level"]).upper() != expected_risk:
+                log.warning(
+                    f"normalise_result: preserved cvss risk_level '{cvss_detail['risk_level']}' "
+                    f"which differs from standard '{expected_risk}' for score {cvss_val}"
+                )
+        else:
+            log.warning(
+                f"normalise_result: invalid or out-of-range cvss score {raw_val!r}; falling back to 0.0 NONE"
+            )
+            cvss_val = 0.0
+            cvss_detail["cvss_score"] = 0.0
+            cvss_detail["risk_level"] = "NONE"
+            if "cvss_risk_level" in cvss_detail:
+                cvss_detail["cvss_risk_level"] = "NONE"
     else:
-        raw_scalar = cvss_raw if (cvss_raw is not None and not isinstance(cvss_raw, bool)) else cvss_score_raw
+        raw_scalar = cvss_raw if cvss_raw is not None else cvss_score_raw
+        if isinstance(raw_scalar, bool) and cvss_score_raw is not None and not isinstance(cvss_score_raw, bool):
+            raw_scalar = cvss_score_raw
+
         parsed_val = _coerce_cvss_score(raw_scalar)
         if parsed_val is not None:
             cvss_val = parsed_val
