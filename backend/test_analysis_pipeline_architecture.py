@@ -248,3 +248,156 @@ def test_f_celery_normalised_result_contract():
     assert norm["capabilities"] == ["cap_a"] and norm["mitre"] == ["T1055"]
     assert norm["risk_score"] == 42.0 and norm["cvss"] == 7.5
     assert norm["verdict"]["verdict"] == "MALICIOUS"
+
+
+def test_concurrent_same_file_runs_pipeline_once(tmp_path):
+    """Concurrent calls for the same file must share one analysis result."""
+    import threading
+
+    sample = tmp_path / "same.bin"
+    sample.write_bytes(b"sample-binary-content")
+
+    calls = []
+    calls_lock = threading.Lock()
+    first_entered = threading.Event()
+    second_entered = threading.Event()
+    release_first = threading.Event()
+    results = {}
+    errors = []
+
+    def fake_extraction(path):
+        with calls_lock:
+            calls.append(path)
+            call_number = len(calls)
+
+        if call_number == 1:
+            first_entered.set()
+            assert release_first.wait(timeout=5), "First extraction was not released"
+        else:
+            second_entered.set()
+
+        return {
+            "functions": [{"name": "sample_function"}],
+            "imports": ["kernel32.dll"],
+            "strings": ["sample"],
+            "calls": [],
+            "_meta": {"radare2_available": True, "ghidra_available": False},
+        }
+
+    def worker(key):
+        try:
+            results[key] = pipeline.run_analysis_pipeline(str(sample))
+        except Exception as exc:
+            errors.append(exc)
+
+    with patch.object(pipeline, "run_unified_extraction", fake_extraction):
+        first = threading.Thread(target=worker, args=("first",))
+        second = threading.Thread(target=worker, args=("second",))
+
+        first.start()
+        assert first_entered.wait(timeout=5), "First analysis never started"
+
+        second.start()
+
+        # Without single-flight coordination, the second extraction enters here.
+        # With coordination, the second call waits for the first result.
+        duplicate_started = second_entered.wait(timeout=0.3)
+        release_first.set()
+
+        first.join(timeout=5)
+        second.join(timeout=5)
+
+    assert not first.is_alive() and not second.is_alive(), "Pipeline thread hung"
+    assert not errors, f"Unexpected pipeline errors: {errors}"
+    assert not duplicate_started, "Duplicate extraction started for the same file"
+    assert len(calls) == 1
+    assert results["first"] == results["second"]
+    assert results["first"] is not results["second"]
+
+
+def test_concurrent_different_files_can_run_in_parallel(tmp_path):
+    """Per-file coordination must not serialize different file identities."""
+    import threading
+
+    first_path = tmp_path / "first.bin"
+    second_path = tmp_path / "second.bin"
+    first_path.write_bytes(b"first-binary")
+    second_path.write_bytes(b"second-binary")
+
+    both_entered = threading.Barrier(2, timeout=5)
+    errors = []
+    results = {}
+
+    def fake_extraction(path):
+        both_entered.wait()
+        return {
+            "functions": [{"name": "sample_function"}],
+            "imports": ["kernel32.dll"],
+            "strings": ["sample"],
+            "calls": [],
+            "_meta": {"radare2_available": True, "ghidra_available": False},
+        }
+
+    def worker(key, path):
+        try:
+            results[key] = pipeline.run_analysis_pipeline(str(path))
+        except Exception as exc:
+            errors.append(exc)
+
+    with patch.object(pipeline, "run_unified_extraction", fake_extraction):
+        first = threading.Thread(target=worker, args=("first", first_path))
+        second = threading.Thread(target=worker, args=("second", second_path))
+
+        first.start()
+        second.start()
+        first.join(timeout=7)
+        second.join(timeout=7)
+
+    assert not first.is_alive() and not second.is_alive(), "Pipeline thread hung"
+    assert not errors, f"Unexpected pipeline errors: {errors}"
+    assert "first" in results
+    assert "second" in results
+
+
+def test_pipeline_lock_released_after_failure_allows_retry(tmp_path):
+    """A failed analysis must release its per-file lock for subsequent retry."""
+    sample = tmp_path / "retry.bin"
+    sample.write_bytes(b"retry-binary-content")
+
+    calls = []
+
+    def fail_once_then_succeed(path):
+        calls.append(path)
+        if len(calls) == 1:
+            return {
+                "functions": [],
+                "imports": [],
+                "strings": [],
+                "calls": [],
+                "_meta": {"reason": "intentional test failure"},
+            }
+        return {
+            "functions": [{"name": "recovered_function"}],
+            "imports": ["kernel32.dll"],
+            "strings": ["recovered"],
+            "calls": [],
+            "_meta": {"radare2_available": True, "ghidra_available": False},
+        }
+
+    identity = pipeline._get_file_identity(str(sample))
+
+    with patch.object(pipeline, "run_unified_extraction", fail_once_then_succeed), \
+         patch.object(pipeline, "analyze_functions", return_value={"results": []}), \
+         patch.object(pipeline, "extract_imports", return_value=[]), \
+         patch.object(pipeline, "extract_strings", return_value=[]):
+
+        with pytest.raises(pipeline.PipelineExtractionFailedError):
+            pipeline.run_analysis_pipeline(str(sample))
+
+        assert identity not in pipeline._pipeline_lock_registry
+
+        result = pipeline.run_analysis_pipeline(str(sample))
+
+    assert len(calls) == 2
+    assert result["functions"] == [{"name": "recovered_function"}]
+    assert identity not in pipeline._pipeline_lock_registry

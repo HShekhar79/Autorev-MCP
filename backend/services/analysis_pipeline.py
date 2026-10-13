@@ -15,6 +15,7 @@ import collections
 import copy
 import os
 import threading
+from contextlib import contextmanager
 
 from utils.debug import debug_log
 
@@ -179,6 +180,41 @@ def _get_file_identity(path: str) -> tuple:
 
 _pipeline_cache: BoundedPipelineCache = BoundedPipelineCache(max_size=32)
 
+# Per-file single-flight coordination. Different file identities use
+# different locks, so unrelated analyses remain concurrent.
+_pipeline_lock_registry_guard = threading.Lock()
+_pipeline_lock_registry: dict[tuple, tuple[threading.Lock, int]] = {}
+
+
+@contextmanager
+def _pipeline_lock_for(identity: tuple):
+    """Hold a reference-counted lock for one file identity."""
+    with _pipeline_lock_registry_guard:
+        entry = _pipeline_lock_registry.get(identity)
+        if entry is None:
+            lock = threading.Lock()
+            users = 1
+        else:
+            lock, users = entry
+            users += 1
+        _pipeline_lock_registry[identity] = (lock, users)
+
+    lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
+        with _pipeline_lock_registry_guard:
+            current = _pipeline_lock_registry.get(identity)
+            if current is not None and current[0] is lock:
+                remaining_users = current[1] - 1
+                if remaining_users == 0:
+                    _pipeline_lock_registry.pop(identity, None)
+                else:
+                    _pipeline_lock_registry[identity] = (
+                        lock,
+                        remaining_users,
+                    )
 
 def _invalidate_cache(path: str):
     _pipeline_cache.invalidate_path(path)
@@ -325,7 +361,7 @@ def collect_all_behaviours(function_results, imports, capa_results):
 # ---------------------------------------------------------------------------
 # FULL PIPELINE  (cached per file path)
 # ---------------------------------------------------------------------------
-def run_analysis_pipeline(path: str, progress_cb=None) -> dict:
+def _run_analysis_pipeline_locked(path: str, progress_cb=None) -> dict:
     """
     THE authoritative malware-analysis pipeline (single implementation).
 
@@ -693,6 +729,16 @@ def run_analysis_pipeline(path: str, progress_cb=None) -> dict:
     _pipeline_cache.set_entry(file_identity, path, result)
     _notify(progress_cb, "complete", 100)
     return copy.deepcopy(result)
+
+
+def run_analysis_pipeline(path: str, progress_cb=None) -> dict:
+    """Run one analysis at a time per file identity, sharing cached results."""
+    file_identity = _get_file_identity(path)
+
+    with _pipeline_lock_for(file_identity):
+        # Recheck cache inside the lock. A previous caller may have
+        # completed and populated it while this caller was waiting.
+        return _run_analysis_pipeline_locked(path, progress_cb)
 
 
 def _describe_engines(meta: dict) -> str:
